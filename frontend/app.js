@@ -123,6 +123,74 @@ $("tileProdutor").onclick = () => capturarTile("produtor", "Foto do produtor");
 $("tileColeta").onclick   = () => capturarTile("coleta", "Foto da coleta (produto sendo colhido)");
 $("tileProduto").onclick  = () => capturarTile("produto", "Foto principal do produto");
 
+// ============================================================================
+// PRODUTOR (Fase 3) — cada lote pertence a um produtor cadastrado. Base do
+// histórico de produção sustentável e dos indicadores (ver backend/db.py).
+// ============================================================================
+let produtorSelecionado = null;
+
+async function carregarProdutores() {
+  try {
+    const r = await fetch("/api/produtores");
+    if (!r.ok) return;
+    const lista = await r.json();
+    const sel = $("selProdutor");
+    sel.querySelectorAll("option[data-pid]").forEach((o) => o.remove());
+    const antesDe = sel.querySelector('option[value="novo"]');
+    for (const p of lista) {
+      const o = document.createElement("option");
+      o.value = String(p.id); o.dataset.pid = "1";
+      o.textContent = `${p.nome}${p.comunidade ? " — " + p.comunidade : ""} (${p.total_lotes} lote(s))`;
+      sel.insertBefore(o, antesDe);
+    }
+  } catch { /* offline: segue sem lista */ }
+}
+
+$("selProdutor").onchange = async (e) => {
+  const v = e.target.value;
+  $("novoProdutorForm").classList.toggle("hide", v !== "novo");
+  if (v === "" || v === "novo") {
+    produtorSelecionado = null;
+    $("produtorInfo").classList.add("hide");
+    return;
+  }
+  const r = await fetch("/api/produtores/" + v);
+  if (r.ok) { produtorSelecionado = await r.json(); renderProdutorInfo(produtorSelecionado); }
+};
+
+function renderProdutorInfo(p) {
+  const ind = p.indicadores || {};
+  $("produtorInfo").classList.remove("hide");
+  $("produtorInfo").innerHTML =
+    `${p.foto ? `<img src="${p.foto}" alt="produtor"/>` : ""}
+     <div><div class="pnome">${esc(p.nome)}</div>
+       <div class="pmeta">${esc(p.comunidade || "")}${p.comunidade && p.cooperativa ? " · " : ""}${esc(p.cooperativa || "")} · cód. ${esc(p.codigo)}</div>
+       <div class="prod-chips">
+         <span class="chip">📦 ${ind.total_lotes || 0} lote(s)</span>
+         <span class="chip">🔗 ${ind.lotes_rastreaveis_completos || 0} rastreável(is)</span>
+       </div></div>`;
+}
+
+$("npSalvar").onclick = async () => {
+  const nome = $("npNome").value.trim();
+  if (!nome) return alert("Informe o nome do produtor.");
+  const ev = evidencias.produtor;  // reaproveita foto + GPS já capturados no tile "Produtor"
+  const body = { nome, comunidade: $("npComunidade").value.trim(), cooperativa: cooperativaNome() };
+  if (ev) { body.foto = ev.image; if (ev.gps?.ok) { body.lat = ev.gps.lat; body.lng = ev.gps.lng; } }
+  const r = await fetch("/api/produtores", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!r.ok) return alert("Falha ao cadastrar produtor.");
+  produtorSelecionado = await r.json();
+  await carregarProdutores();
+  $("selProdutor").value = String(produtorSelecionado.id);
+  $("novoProdutorForm").classList.add("hide");
+  $("npNome").value = ""; $("npComunidade").value = "";
+  renderProdutorInfo(produtorSelecionado);
+};
+
+carregarProdutores();
+
 // ---- Captura de áudio + foto ----
 // O Gemma (via servidor/Gemini API) só recebe texto+imagem, não áudio. A fala é
 // transcrita por ASR (não é raciocínio): 1º a Web Speech API do navegador (nativa,
@@ -286,6 +354,8 @@ const cooperativaNome = () => "Cooperativa Exemplo (Resex Chico Mendes)";
 $("salvar").onclick = async () => {
   const id = "lote_" + Date.now();
   await putLote({ id, ficha: fichaAtual, narrativa: $("narr").textContent,
+                  relato: $("relato").value.trim(),
+                  produtor_id: produtorSelecionado?.id || null,
                   evidencias: JSON.parse(JSON.stringify(evidencias)),
                   status: "rascunho_local", criado_em: new Date().toISOString() });
   await refreshFila();
@@ -306,7 +376,8 @@ $("sync").onclick = async () => {
     const r = await fetch("/api/publicar", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ficha_confirmada: l.ficha, narrativa: l.narrativa,
-                             cooperativa: cooperativaNome(), evidencias: l.evidencias || {} }),
+                             cooperativa: cooperativaNome(), evidencias: l.evidencias || {},
+                             relato: l.relato || "", produtor_id: l.produtor_id || null }),
     });
     if (!r.ok) { alert("Falha ao publicar lote " + l.id); continue; }
     const info = await r.json();

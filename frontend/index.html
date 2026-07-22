@@ -76,6 +76,18 @@
   audio{width:100%;margin-top:10px}
   img#prev{width:100%;max-height:260px;object-fit:cover;border-radius:12px;margin-top:10px}
 
+  select,input[type=text]{width:100%;border:1.5px solid var(--linha);border-radius:10px;padding:11px 12px;
+    font-size:14px;font-family:inherit;color:var(--texto);background:#fff;margin-top:10px;transition:border-color .15s}
+  select:focus,input[type=text]:focus{outline:none;border-color:var(--verde-500)}
+  .prod-info{display:flex;gap:12px;align-items:center;margin-top:12px;padding:12px;
+    background:var(--verde-50);border:1px solid var(--verde-100);border-radius:12px}
+  .prod-info img{width:48px;height:48px;border-radius:50%;object-fit:cover;flex:none;border:1px solid var(--linha)}
+  .prod-info .pnome{font-weight:700;font-size:14px}
+  .prod-info .pmeta{font-size:12px;color:var(--texto-suave);margin-top:2px}
+  .prod-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .prod-chips .chip{font-size:11px;font-weight:700;background:var(--verde-100);color:var(--verde-700);
+    padding:3px 9px;border-radius:99px}
+
   textarea{width:100%;border:1.5px solid var(--linha);border-radius:10px;padding:11px 12px;
     font-size:14px;font-family:inherit;line-height:1.5;color:var(--texto);resize:vertical;
     min-height:76px;margin-top:10px;transition:border-color .15s;background:#fff}
@@ -172,6 +184,21 @@
     <div class="step" data-step="2"></div>
     <div class="step" data-step="3"></div>
     <div class="step" data-step="4"></div>
+  </div>
+
+  <div class="card" id="produtorCard">
+    <h2><span class="num">👤</span>Produtor do lote</h2>
+    <select id="selProdutor">
+      <option value="">— Selecionar produtor cadastrado —</option>
+      <option value="novo">➕ Cadastrar novo produtor</option>
+    </select>
+    <div id="novoProdutorForm" class="hide">
+      <input type="text" id="npNome" placeholder="Nome do produtor"/>
+      <input type="text" id="npComunidade" placeholder="Comunidade (opcional)"/>
+      <p class="hint" id="npFotoHint">A foto e o GPS do produtor virão da captura “Produtor” abaixo (opcional).</p>
+      <button id="npSalvar" class="sec">Cadastrar produtor</button>
+    </div>
+    <div id="produtorInfo" class="prod-info hide"></div>
   </div>
 
   <div class="card" id="cap">

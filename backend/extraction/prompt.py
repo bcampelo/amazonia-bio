@@ -36,30 +36,52 @@ EXTRACTION_SYSTEM = (
 
 
 RELATO_SYSTEM = (
-    "Você é o organizador de relatos do BioAmazon IA. Recebe a TRANSCRIÇÃO CRUA da "
-    "fala de um produtor extrativista (pode vir com repetições, hesitações, frases "
-    "quebradas e erros de reconhecimento de voz) e reescreve como um relato claro, "
-    "em português, em 1ª pessoa, bem organizado.\n"
+    "Você é o analista de relatos do BioAmazon IA. Recebe a TRANSCRIÇÃO CRUA da fala "
+    "espontânea de um produtor extrativista (com repetições, hesitações, frases "
+    "quebradas e possíveis erros de reconhecimento de voz) e produz uma DESCRIÇÃO "
+    "PROFISSIONAL E ESTRUTURADA da coleta, em português, própria para um registro de "
+    "rastreabilidade.\n"
+    "COMO ESCREVER:\n"
+    "• Terceira pessoa, tom formal, claro e objetivo — como um registro técnico. "
+    "Refira-se a quem fala como \"o produtor\".\n"
+    "• Organize os fatos numa sequência lógica (quando, onde, como, o quê), em texto "
+    "corrido e bem redigido.\n"
+    "• Fatos subjetivos ou de percepção devem ser atribuídos: \"O produtor informou "
+    "que…\", \"Segundo o produtor…\".\n"
     "REGRAS INEGOCIÁVEIS:\n"
-    "1. NÃO invente NENHUM fato: não acrescente lugar, comunidade, número, data, "
-    "certificação ou detalhe que o produtor não disse. Só organize o que já está lá.\n"
-    "2. Preserve EXATAMENTE o significado. Pode corrigir gramática e ordenar as ideias, "
-    "mas nunca mude o sentido do que foi dito.\n"
-    "3. Se a fala estiver vazia ou incompreensível, devolva uma string vazia.\n"
-    "4. Devolva APENAS o relato reescrito, sem título, sem aspas, sem comentários."
+    "1. NÃO invente NADA: não acrescente lugar, comunidade, número, data, certificação "
+    "ou detalhe que o produtor não disse. Não deduza além do que foi falado.\n"
+    "2. NÃO remova nenhuma informação relevante que o produtor tenha dito.\n"
+    "3. Apenas REORGANIZE e formalize; jamais mude o sentido do que foi dito.\n"
+    "4. Se a fala estiver vazia ou incompreensível, devolva uma string vazia.\n"
+    "5. Devolva APENAS a descrição, sem título, sem aspas, sem comentários."
+)
+
+# Exemplo (few-shot) que fixa o ESTILO alvo — fala crua -> descrição profissional,
+# sem inventar nada. Ensina o formato melhor que qualquer instrução isolada.
+_RELATO_EXEMPLO = (
+    "EXEMPLO.\n"
+    "Fala crua: <<<hoje de manhã a gente foi ali no igarapé, colhemos esse açaí, "
+    "estava bem maduro, usamos paneiro e depois trouxemos para a cooperativa>>>\n"
+    "Descrição estruturada: A coleta foi realizada no período da manhã, em uma área "
+    "próxima a um igarapé. O produtor informou que o açaí encontrava-se em estágio "
+    "adequado de maturação, sendo coletado manualmente com o uso de paneiros e "
+    "posteriormente encaminhado à cooperativa."
 )
 
 
 def build_relato_prompt(transcript: str) -> str:
-    """Passo 'Gemma reorganiza o relato' (SPEC §7 / fluxo de áudio): transforma a
-    transcrição crua num relato limpo, SEM inventar nada. Esse relato organizado é
-    o que alimenta a extração da ficha e também é mostrado ao operador."""
+    """Passo 'Gemma estrutura o relato' (SPEC §7 / Fase 3): transforma a transcrição
+    crua numa DESCRIÇÃO PROFISSIONAL da coleta, SEM inventar nem remover fatos. Essa
+    descrição alimenta a extração da ficha, é mostrada/editável ao operador e passa a
+    integrar o registro do lote."""
     return (
         f"{RELATO_SYSTEM}\n\n"
-        "TRANSCRIÇÃO CRUA DA FALA:\n"
+        f"{_RELATO_EXEMPLO}\n\n"
+        "AGORA FAÇA O MESMO COM ESTA FALA.\n"
+        "Fala crua:\n"
         f"<<<{transcript}>>>\n\n"
-        "Reescreva o relato do produtor de forma clara e organizada, "
-        "sem inventar nada:"
+        "Descrição estruturada (sem inventar nada, sem remover fatos):"
     )
 
 

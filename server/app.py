@@ -101,6 +101,36 @@ def api_narrar():
     return jsonify({"narrativa": narrativa})
 
 
+# --------------------------------------------------------------------------- #
+# Produtores (Fase 3) — cadastro + histórico + indicadores (scaffolding).
+# --------------------------------------------------------------------------- #
+@app.get("/api/produtores")
+def api_listar_produtores():
+    return jsonify(db.listar_produtores())
+
+
+@app.post("/api/produtores")
+def api_criar_produtor():
+    data = request.get_json(force=True) or {}
+    nome = (data.get("nome") or "").strip()
+    if not nome:
+        return jsonify({"erro": "nome é obrigatório"}), 400
+    prod = db.criar_produtor(
+        nome=nome, comunidade=(data.get("comunidade") or "").strip(),
+        cooperativa=(data.get("cooperativa") or "").strip(),
+        foto=data.get("foto"), lat=data.get("lat"), lng=data.get("lng"),
+    )
+    return jsonify(prod), 201
+
+
+@app.get("/api/produtores/<int:produtor_id>")
+def api_buscar_produtor(produtor_id):
+    prod = db.buscar_produtor(produtor_id)
+    if not prod:
+        abort(404)
+    return jsonify(prod)
+
+
 def _slugify(text: str) -> str:
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
     text = re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
@@ -123,10 +153,13 @@ def api_publicar():
     narrativa = data.get("narrativa") or ""
     cooperativa = data.get("cooperativa") or "Cooperativa Exemplo (Resex Chico Mendes)"
     evidencias = data.get("evidencias") or {}
+    relato = data.get("relato") or ""
+    produtor_id = data.get("produtor_id")
     produto = (ficha_confirmada.get("produto") or {}).get("value", "lote")
 
     slug = f"{_slugify(produto)}-{uuid.uuid4().hex[:6]}"
-    db.salvar_lote(slug, produto, cooperativa, ficha_confirmada, narrativa, evidencias)
+    db.salvar_lote(slug, produto, cooperativa, ficha_confirmada, narrativa,
+                   evidencias=evidencias, relato=relato, produtor_id=produtor_id)
 
     url = request.host_url.rstrip("/") + "/p/" + slug
     return jsonify({"slug": slug, "url": url, "qr_base64": _qr_base64(url)})
@@ -176,6 +209,27 @@ _PUBLIC_PAGE = """<!doctype html>
     <p class="narrativa">{{ narrativa }}</p>
     <p class="selo">Atestado por {{ cooperativa }}</p>
   </div>
+  {% if produtor %}
+  <div class="card">
+    <h2>Produtor</h2>
+    <div style="display:flex;gap:12px;align-items:center">
+      {% if produtor.foto %}<img src="{{ produtor.foto }}" style="width:56px;height:56px;border-radius:50%;object-fit:cover;border:1px solid #e0e6dd"/>{% endif %}
+      <div>
+        <div style="font-weight:600">{{ produtor.nome }}</div>
+        <div class="selo" style="margin:2px 0 0">
+          {{ produtor.comunidade }}{% if produtor.comunidade and produtor.cooperativa %} · {% endif %}{{ produtor.cooperativa }}</div>
+        <div class="selo" style="margin:2px 0 0">{{ produtor.indicadores.total_lotes }} lote(s) rastreado(s) · cód. {{ produtor.codigo }}</div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+  {% if relato %}
+  <div class="card">
+    <h2>Descrição da coleta</h2>
+    <p class="narrativa" style="font-size:15px">{{ relato }}</p>
+    <p class="selo">Relato do produtor, organizado pelo Gemma — sem fatos inventados.</p>
+  </div>
+  {% endif %}
   <div class="card">
     <h2>Ficha do lote</h2>
     {% for k, v in ficha.items() %}
@@ -265,10 +319,11 @@ def pagina_publica(slug):
         abort(404)
     produto = (registro["ficha_confirmada"].get("produto") or {}).get("value", "Produto")
     cadeia = _prep_cadeia(registro.get("evidencias") or {})
+    produtor = db.buscar_produtor(registro["produtor_id"]) if registro.get("produtor_id") else None
     return render_template_string(
         _PUBLIC_PAGE, produto=produto, narrativa=registro["narrativa"],
         cooperativa=registro["cooperativa"], ficha=registro["ficha_confirmada"],
-        cadeia=cadeia,
+        cadeia=cadeia, relato=registro.get("relato") or "", produtor=produtor,
     )
 
 

@@ -230,6 +230,34 @@ audit, but the **public page rounds coordinates to ~2 decimals (~1 km)** via
 touching the public page, keep dynamic strings escaped (`_gps_publico` uses `markupsafe`) and
 the coordinate-rounding intact.
 
+### Structured relato + producer registry (Phase 3)
+
+**Structured relato (intelligence over the producer's speech).** `estruturar_relato()`
+(`backend/pipeline.py`) is no longer a light cleanup — its prompt (`build_relato_prompt`,
+`backend/extraction/prompt.py`) turns raw ASR into a **professional, third-person
+description** of the collection ("A coleta foi realizada no período da manhã, em uma área
+próxima a um igarapé. O produtor informou que…"). Hard rule, enforced by a few-shot example
+in the prompt: **invents nothing, removes no relevant fact, only reorganizes/formalizes.**
+It's the Gemma doing it (not heuristics). The result feeds extraction AND is persisted
+(`lotes.relato`) and shown on the public page as "Descrição da coleta". Keep the few-shot
+example and the "não inventar / não remover" rules if you touch this prompt.
+
+**Producer registry (`produtores` table in `db.py`).** Each lote can reference a producer
+(`lotes.produtor_id`, nullable/back-compat). A producer has `codigo` (human id `PROD-XXXX`),
+nome, comunidade, cooperativa, foto, lat/lng (localização principal), and an extensible
+`indicadores_json`. Endpoints: `GET/POST /api/produtores`, `GET /api/produtores/<id>` (detail
+includes `historico` = the producer's lotes + computed `indicadores`). In the UI (`app.js`),
+the producer is selected/created at the top of the capture flow; **creating one reuses the
+`produtor` evidence photo + GPS** so identity and location come from a live-captured evidence,
+not typed by hand.
+
+**Sustainability indicators are SCAFFOLDING, not a scoring system.** `calcular_indicadores()`
+returns objective aggregates computed from history (total_lotes, lotes_rastreaveis_completos,
+primeiro/ultimo_registro) plus **empty extensible fields** (regularidade_entregas,
+boas_praticas, projetos_sustentaveis, selos) that future rules can fill *without schema
+changes* — they're read from `indicadores_json`. Do NOT add scoring rules yet; the ask was
+to prepare the structure, and the whole point is that the architecture already supports it.
+
 ### Android (`android/README_LITERT.md`, `docs/EDGE_RESEARCH.md`)
 
 No Android code exists yet in this repo — these are planning/research docs. Key decisions
