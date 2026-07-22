@@ -131,6 +131,64 @@ def api_buscar_produtor(produtor_id):
     return jsonify(prod)
 
 
+# --------------------------------------------------------------------------- #
+# Lotes (listagem para dashboard/histórico/rastreabilidade) + denúncias.
+# --------------------------------------------------------------------------- #
+@app.get("/api/lotes")
+def api_listar_lotes():
+    cooperativa = request.args.get("cooperativa")
+    lotes = db.listar_lotes(cooperativa=cooperativa)
+    # enriquece com o nome do produtor (uma consulta só, mapa em memória)
+    nomes = {p["id"]: p["nome"] for p in db.listar_produtores()}
+    resumo = []
+    for lo in lotes:
+        ev = lo.get("evidencias") or {}
+        essenciais = ("produtor", "coleta", "produto", "gemma", "confirmacao", "narrativa")
+        resumo.append({
+            "slug": lo["slug"], "produto": lo["produto"], "cooperativa": lo["cooperativa"],
+            "produtor_id": lo.get("produtor_id"),
+            "produtor_nome": nomes.get(lo.get("produtor_id")),
+            "criado_em": lo["criado_em"], "status": lo["status"],
+            "evidencias_completas": sum(1 for k in essenciais if k in ev),
+            "url": f"/p/{lo['slug']}",
+        })
+    return jsonify(resumo)
+
+
+@app.get("/api/resumo")
+def api_resumo():
+    """Números do painel (dashboard)."""
+    lotes = db.listar_lotes()
+    produtores = db.listar_produtores()
+    essenciais = ("produtor", "coleta", "produto", "gemma", "confirmacao", "narrativa")
+    completos = sum(1 for lo in lotes
+                    if all(k in (lo.get("evidencias") or {}) for k in essenciais))
+    coops = sorted({lo["cooperativa"] for lo in lotes if lo["cooperativa"]})
+    return jsonify({
+        "total_lotes": len(lotes),
+        "total_produtores": len(produtores),
+        "lotes_rastreaveis_completos": completos,
+        "cooperativas": coops,
+        "denuncias_abertas": sum(1 for d in db.listar_denuncias() if d["status"] == "aberta"),
+    })
+
+
+@app.get("/api/denuncias")
+def api_listar_denuncias():
+    return jsonify(db.listar_denuncias())
+
+
+@app.post("/api/denuncias")
+def api_criar_denuncia():
+    data = request.get_json(force=True) or {}
+    mensagem = (data.get("mensagem") or "").strip()
+    if not mensagem:
+        return jsonify({"erro": "mensagem é obrigatória"}), 400
+    d = db.salvar_denuncia(mensagem=mensagem, slug=(data.get("slug") or "").strip(),
+                           contato=(data.get("contato") or "").strip())
+    return jsonify(d), 201
+
+
 def _slugify(text: str) -> str:
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
     text = re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()

@@ -349,7 +349,10 @@ $("confirm").onclick = async () => {
   $("narr").textContent = await GemmaWeb.narrate(fichaAtual, cooperativaNome());
   marcarEvidencia("narrativa", { timestamp: new Date().toISOString() });
 };
-const cooperativaNome = () => "Cooperativa Exemplo (Resex Chico Mendes)";
+// A cooperativa é configurável (tela Config, salva em localStorage). Enquanto
+// screens.js não expõe getCooperativa, cai no padrão. Ver window.getCooperativa.
+const COOP_PADRAO = "Cooperativa Exemplo (Resex Chico Mendes)";
+const cooperativaNome = () => (window.getCooperativa ? window.getCooperativa() : COOP_PADRAO);
 
 $("salvar").onclick = async () => {
   const id = "lote_" + Date.now();

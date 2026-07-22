@@ -167,6 +167,39 @@
   .cadeia .cmeta .g{color:var(--azul)}
   .cadeia .cmeta .ng{color:var(--vermelho)}
 
+  /* ---- Navegação (SPA por hash) ---- */
+  nav.tabs{position:sticky;top:52px;z-index:9;background:var(--card);border-bottom:1px solid var(--linha);
+    display:flex;gap:4px;overflow-x:auto;padding:8px 10px;scrollbar-width:none}
+  nav.tabs::-webkit-scrollbar{display:none}
+  nav.tabs a{flex:none;font-size:13px;font-weight:600;color:var(--texto-suave);text-decoration:none;
+    padding:7px 13px;border-radius:99px;white-space:nowrap;transition:background .15s,color .15s}
+  nav.tabs a:hover{background:var(--verde-50)}
+  nav.tabs a.ativo{background:var(--verde-700);color:#fff}
+  .view{display:block}
+  .view.hide{display:none}
+  .view-titulo{font-size:19px;font-weight:700;letter-spacing:-.01em;margin:4px 2px 14px}
+  .view-sub{font-size:13.5px;color:var(--texto-suave);margin:-10px 2px 16px}
+
+  /* ---- Componentes de tela (stats, listas) ---- */
+  .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+  .stat{background:var(--card);border:1px solid var(--linha);border-radius:14px;padding:16px;box-shadow:var(--shadow)}
+  .stat .n{font-size:28px;font-weight:800;color:var(--verde-700);line-height:1}
+  .stat .l{font-size:12px;color:var(--texto-suave);margin-top:6px;font-weight:600}
+  .lista{list-style:none;margin:0;padding:0}
+  .lista li,a.lista-item{display:flex;gap:12px;align-items:center;padding:12px;border:1px solid var(--linha);
+    border-radius:12px;margin-bottom:10px;background:var(--card);text-decoration:none;color:inherit;transition:border-color .15s;cursor:pointer}
+  a.lista-item:hover,li.clicavel:hover{border-color:var(--verde-500)}
+  .lista .av{width:42px;height:42px;border-radius:10px;flex:none;object-fit:cover;background:var(--verde-100);
+    display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--verde-700)}
+  .lista .li-main{flex:1;min-width:0}
+  .lista .li-t{font-weight:600;font-size:14.5px}
+  .lista .li-s{font-size:12.5px;color:var(--texto-suave);margin-top:2px;word-break:break-word}
+  .lista .li-tag{font-size:11px;font-weight:700;padding:3px 8px;border-radius:99px;background:var(--verde-100);color:var(--verde-700);flex:none}
+  .lista .li-tag.parcial{background:var(--laranja-bg);color:var(--laranja)}
+  .vazio{text-align:center;color:var(--texto-suave);font-size:14px;padding:30px 12px}
+  .msg-ok{background:var(--verde-100);color:var(--verde-700);border-radius:10px;padding:12px;font-size:13.5px;font-weight:600;margin-top:12px}
+  label.campo-label{display:block}
+
   .hide{display:none}
 </style>
 </head>
@@ -178,7 +211,18 @@
     <span class="pill" id="net">offline</span>
   </span>
 </header>
+<nav class="tabs" id="nav">
+  <a href="#registrar">📝 Registrar</a>
+  <a href="#painel">📊 Painel</a>
+  <a href="#lotes">📦 Lotes</a>
+  <a href="#rastrear">🔎 Rastrear</a>
+  <a href="#produtores">👥 Produtores</a>
+  <a href="#cooperativa">🏭 Cooperativa</a>
+  <a href="#denuncias">⚠️ Denúncias</a>
+  <a href="#config">⚙️ Config</a>
+</nav>
 <main>
+  <section class="view" id="view-registrar">
   <div class="steps">
     <div class="step" data-step="1"></div>
     <div class="step" data-step="2"></div>
@@ -260,10 +304,79 @@
       <p><a id="linkPublico" target="_blank" rel="noopener"></a></p>
     </div>
   </div>
+  </section><!-- /view-registrar -->
+
+  <section class="view hide" id="view-painel">
+    <h1 class="view-titulo">Painel</h1>
+    <p class="view-sub">Visão geral da rastreabilidade registrada.</p>
+    <div id="painelConteudo"><p class="vazio">Carregando…</p></div>
+  </section>
+
+  <section class="view hide" id="view-lotes">
+    <h1 class="view-titulo">Lotes registrados</h1>
+    <p class="view-sub">Histórico de todos os lotes publicados. Toque para ver a página pública.</p>
+    <div id="lotesConteudo"><p class="vazio">Carregando…</p></div>
+  </section>
+
+  <section class="view hide" id="view-rastrear">
+    <h1 class="view-titulo">Rastrear lote</h1>
+    <p class="view-sub">Busque por produto, produtor ou código do lote.</p>
+    <input type="text" id="buscaRastreio" placeholder="Ex.: açaí, Maria, acai-c0272c…"/>
+    <div id="rastrearConteudo" style="margin-top:14px"></div>
+  </section>
+
+  <section class="view hide" id="view-produtores">
+    <h1 class="view-titulo">Produtores</h1>
+    <p class="view-sub">Cadastro e histórico de produção sustentável.</p>
+    <div id="produtoresConteudo"><p class="vazio">Carregando…</p></div>
+    <div id="perfilProdutor" class="hide"></div>
+  </section>
+
+  <section class="view hide" id="view-cooperativa">
+    <h1 class="view-titulo">Cooperativa</h1>
+    <p class="view-sub">Perfil e produção agregada.</p>
+    <div id="cooperativaConteudo"><p class="vazio">Carregando…</p></div>
+  </section>
+
+  <section class="view hide" id="view-denuncias">
+    <h1 class="view-titulo">Denúncias e transparência</h1>
+    <p class="view-sub">Canal aberto para relatar irregularidades sobre um lote.</p>
+    <div class="card">
+      <label class="campo-label" for="denSlug">Código do lote (opcional)</label>
+      <input type="text" id="denSlug" placeholder="Ex.: acai-c0272c"/>
+      <label class="campo-label" for="denMsg" style="margin-top:12px">Descrição</label>
+      <textarea id="denMsg" placeholder="Descreva a irregularidade observada…"></textarea>
+      <label class="campo-label" for="denContato" style="margin-top:12px">Contato (opcional)</label>
+      <input type="text" id="denContato" placeholder="E-mail ou telefone"/>
+      <button id="denEnviar">Enviar denúncia</button>
+      <div id="denMsgOk" class="msg-ok hide"></div>
+    </div>
+    <h2 style="font-size:13px;color:var(--verde-600);text-transform:uppercase;letter-spacing:.06em;margin:20px 2px 10px">Denúncias registradas</h2>
+    <div id="denunciasLista"><p class="vazio">Carregando…</p></div>
+  </section>
+
+  <section class="view hide" id="view-config">
+    <h1 class="view-titulo">Configurações</h1>
+    <p class="view-sub">Ajustes do aplicativo neste dispositivo.</p>
+    <div class="card">
+      <label class="campo-label" for="cfgCoop">Cooperativa deste operador</label>
+      <input type="text" id="cfgCoop" placeholder="Nome da cooperativa"/>
+      <p class="hint">Usada como garantia de origem nos lotes que você registrar.</p>
+      <button id="cfgSalvar">Salvar</button>
+      <div id="cfgMsgOk" class="msg-ok hide"></div>
+    </div>
+    <div class="card">
+      <h2 style="font-size:12px;margin:0 0 10px;color:var(--verde-600);text-transform:uppercase;letter-spacing:.06em">Sobre</h2>
+      <p style="font-size:13.5px;color:var(--texto-suave);line-height:1.6;margin:0">
+        BioAmazon IA — rastreabilidade da sociobiodiversidade amazônica com o Gemma no dispositivo.
+        Extração, organização do relato e narrativa são feitas pelo Gemma; a transcrição é ASR.</p>
+    </div>
+  </section>
 </main>
 <script src="config.js"></script>
 <script src="evidence.js"></script>
 <script src="gemma-web.js"></script>
 <script src="app.js"></script>
+<script src="screens.js"></script>
 </body>
 </html>

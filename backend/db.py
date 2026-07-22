@@ -50,6 +50,17 @@ CREATE TABLE IF NOT EXISTS produtores (
 );
 """
 
+_SCHEMA_DENUNCIAS = """
+CREATE TABLE IF NOT EXISTS denuncias (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT,
+    mensagem TEXT NOT NULL,
+    contato TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'aberta',
+    criado_em TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
 
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
@@ -67,6 +78,7 @@ def init_db() -> None:
     with _connect() as conn:
         conn.execute(_SCHEMA_LOTES)
         conn.execute(_SCHEMA_PRODUTORES)
+        conn.execute(_SCHEMA_DENUNCIAS)
         # migrações idempotentes (bancos criados em fases anteriores).
         _add_column_if_missing(conn, "lotes", "evidencias_json",
                                "evidencias_json TEXT NOT NULL DEFAULT '{}'")
@@ -208,3 +220,23 @@ def calcular_indicadores(prod: dict) -> dict:
         "projetos_sustentaveis": guardados.get("projetos_sustentaveis", []),
         "selos": guardados.get("selos", []),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Denúncias (Fase 4) — canal público de transparência sobre um lote.
+# --------------------------------------------------------------------------- #
+def salvar_denuncia(mensagem: str, slug: str = "", contato: str = "") -> dict:
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO denuncias (slug, mensagem, contato) VALUES (?, ?, ?)",
+            (slug or None, mensagem, contato),
+        )
+        did = cur.lastrowid
+        row = conn.execute("SELECT * FROM denuncias WHERE id = ?", (did,)).fetchone()
+    return dict(row)
+
+
+def listar_denuncias() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute("SELECT * FROM denuncias ORDER BY criado_em DESC").fetchall()
+    return [dict(r) for r in rows]

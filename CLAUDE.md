@@ -165,8 +165,13 @@ those screens rather than duplicating the query logic.
 ### Frontend (`frontend/`) — offline-first PWA
 
 Vanilla JS, no build step. Load order from `index.html`: `config.js` (WebGPU/model config)
-→ `gemma-web.js` (backend selection + inference calls) → `app.js` (UI wiring, capture,
-IndexedDB, sync). `sw.js` caches the app shell for offline use.
+→ `evidence.js` (camera + GPS primitives) → `gemma-web.js` (backend selection + inference
+calls) → `app.js` (the "Registrar" flow: capture, IndexedDB, sync) → `screens.js` (SPA router
++ the consultation screens). `sw.js` caches the app shell for offline use. **Classic scripts
+share the global lexical scope**, so `screens.js` reuses `cooperativaNome`/state from `app.js`
+and `app.js`'s `cooperativaNome()` calls `window.getCooperativa` (defined in `screens.js`) —
+keep this ordering and don't wrap either file in a module/IIFE that would break the sharing
+(`evidence.js`/`screens.js` are IIFEs but expose exactly what's needed on `window`).
 
 `gemma-web.js`'s `init()` picks a mode in this priority order: **`server`** (calls
 `/api/health`; if reachable, real Gemma via `server/app.py` — the expected path whenever the
@@ -257,6 +262,30 @@ primeiro/ultimo_registro) plus **empty extensible fields** (regularidade_entrega
 boas_praticas, projetos_sustentaveis, selos) that future rules can fill *without schema
 changes* — they're read from `indicadores_json`. Do NOT add scoring rules yet; the ask was
 to prepare the structure, and the whole point is that the architecture already supports it.
+
+### Screens & navigation (`frontend/screens.js`) — the SPA layer (Phase 4)
+
+A **hash-based router** (no build step, no framework) turns the app into 8 views. Each nav
+link `#<rota>` maps to a `<section id="view-<rota>">` and a `ROTAS[rota]` loader in
+`screens.js`; `navegar()` (on `hashchange` + first load) toggles `.view.hide`, sets the active
+nav pill, and calls the loader. To add a screen: add the nav `<a>`, the `<section>`, and a
+`ROTAS` entry — nothing else.
+
+Every consultation screen reads the **real API** (no mocks): `painel` (`/api/resumo` +
+`/api/lotes`), `lotes` (`/api/lotes`), `rastrear` (client-side filter over `/api/lotes`),
+`produtores`/perfil (`/api/produtores`, `/api/produtores/<id>`), `cooperativa` (aggregates
+`/api/lotes` + `/api/produtores` for the configured coop), `denuncias`
+(`GET`/`POST /api/denuncias`), `config`. `registrar` is the original capture flow (`app.js`);
+its `ROTAS` entry is `null` (nothing to load).
+
+The **cooperativa is now configurable**, not hardcoded: `screens.js` owns
+`window.getCooperativa()`/`setCooperativa()` (localStorage `bioamazon.coop`), the Config
+screen edits it, and it threads into capture/publish via `app.js`'s `cooperativaNome()`.
+
+New backend routes for these screens live in `server/app.py`: `GET /api/lotes` (list enriched
+with `produtor_nome` + `evidencias_completas`), `GET /api/resumo` (dashboard counters),
+`GET/POST /api/denuncias`. The `denuncias` table is in `db.py`. When adding a screen that
+needs server data, add the route next to these and keep the "no mock" rule.
 
 ### Android (`android/README_LITERT.md`, `docs/EDGE_RESEARCH.md`)
 
