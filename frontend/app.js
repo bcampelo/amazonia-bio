@@ -41,21 +41,127 @@ const allLotes = () => new Promise((res) => {
   c.onsuccess = (e) => { const cur = e.target.result; if (cur){ out.push(cur.value); cur.continue(); } else res(out); };
 });
 
+// ---- Escape HTML (usado por vários renders abaixo) ----
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c]));
+
+// ============================================================================
+// CADEIA DE EVIDÊNCIAS (Fase 2) — cada etapa vira um elo auditável.
+// Fotos carregam GPS + horário + fonte (câmera ao vivo = verificada / arquivo =
+// não verificada). Áudio, análise do Gemma, confirmação e narrativa carimbam hora.
+// ============================================================================
+const CADEIA = [
+  { key: "produtor",    icon: "👤", titulo: "Foto do produtor" },
+  { key: "coleta",      icon: "🌴", titulo: "Foto da coleta" },
+  { key: "produto",     icon: "🫐", titulo: "Foto do produto (usada pelo Gemma)" },
+  { key: "audio",       icon: "🎙️", titulo: "Relato em áudio do produtor" },
+  { key: "gemma",       icon: "🤖", titulo: "Análise do Gemma (ficha)" },
+  { key: "confirmacao", icon: "✔️", titulo: "Confirmação do operador" },
+  { key: "narrativa",   icon: "📖", titulo: "Narrativa final" },
+];
+const evidencias = {};   // key -> dado da evidência
+
+const horaBR = (iso) => new Date(iso).toLocaleString("pt-BR",
+  { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+function gpsMeta(gps) {
+  if (!gps) return "";
+  return gps.ok
+    ? ` · <span class="g">📍 ${gps.lat}, ${gps.lng} (±${gps.accuracy ?? "?"} m)</span>`
+    : ` · <span class="ng">⚠️ ${esc(gps.motivo)}</span>`;
+}
+
+function metaDaEvidencia(key, ev) {
+  if (["produtor", "coleta", "produto"].includes(key)) {
+    const fonte = ev.fonte === "camera" ? "📷 câmera ao vivo" : "📎 arquivo (não verificada)";
+    return `${fonte} · 🕒 ${horaBR(ev.timestamp)}${gpsMeta(ev.gps)}`;
+  }
+  if (key === "audio") return `🕒 ${horaBR(ev.timestamp)}${ev.temTranscript ? " · transcrição capturada" : ""}`;
+  if (key === "gemma") return `🕒 ${horaBR(ev.timestamp)} · ${ev.preenchidos}/9 campos preenchidos`;
+  if (key === "confirmacao") return `🕒 ${horaBR(ev.timestamp)} · fatos revisados por humano`;
+  if (key === "narrativa") return `🕒 ${horaBR(ev.timestamp)} · gerada só com fatos confirmados`;
+  return "";
+}
+
+function renderCadeia() {
+  $("cadeia").innerHTML = CADEIA.map(({ key, icon, titulo }) => {
+    const ev = evidencias[key];
+    const feito = !!ev;
+    return `<li class="${feito ? "feito" : "pendente"}">
+      <span class="ci">${feito ? "✓" : icon}</span>
+      <span class="cinfo"><span class="ctitulo">${esc(titulo)}</span>
+        ${feito ? `<span class="cmeta">${metaDaEvidencia(key, ev)}</span>` : ""}</span>
+    </li>`;
+  }).join("");
+}
+function marcarEvidencia(key, dado) { evidencias[key] = dado; renderCadeia(); }
+renderCadeia();
+
+// ---- Tiles de captura de foto (produtor / coleta / produto) ----
+function renderTile(tipo) {
+  const el = $("tile" + tipo.charAt(0).toUpperCase() + tipo.slice(1));
+  const ev = evidencias[tipo];
+  if (!ev) return;
+  const gpsBadge = ev.gps?.ok
+    ? `<span class="badge gps">📍 GPS</span>`
+    : `<span class="badge nogps">⚠️ sem GPS</span>`;
+  const fonteBadge = ev.fonte === "camera"
+    ? `<span class="badge cam">📷 ao vivo</span>`
+    : `<span class="badge arq">📎 arquivo</span>`;
+  el.classList.add("ok");
+  el.innerHTML = `<img src="${ev.image}" alt="${esc(tipo)}"/>
+    <div class="tbadges">${fonteBadge}${gpsBadge}</div>`;
+}
+
+async function capturarTile(tipo, label) {
+  const ev = await Evidence.capturePhoto(label);
+  if (!ev) return;
+  marcarEvidencia(tipo, ev);
+  renderTile(tipo);
+}
+$("tileProdutor").onclick = () => capturarTile("produtor", "Foto do produtor");
+$("tileColeta").onclick   = () => capturarTile("coleta", "Foto da coleta (produto sendo colhido)");
+$("tileProduto").onclick  = () => capturarTile("produto", "Foto principal do produto");
+
 // ---- Captura de áudio + foto ----
-// O Gemma (via servidor/Gemini API) só recebe texto+imagem, não áudio — então
-// transcrevemos a fala com a Web Speech API do navegador (nativa, sem outra IA)
-// e mandamos o TEXTO pro Gemma; o áudio gravado fica só para playback/auditoria.
-let media, chunks = [], audioBlob = null, fotoURL = null, transcript = "";
+// O Gemma (via servidor/Gemini API) só recebe texto+imagem, não áudio. A fala é
+// transcrita por ASR (não é raciocínio): 1º a Web Speech API do navegador (nativa,
+// ao vivo); se ela não existir ou falhar, cai no /api/transcrever (servidor). O
+// TEXTO segue pro Gemma, que faz 100% da extração/narrativa. O áudio gravado fica
+// para playback/auditoria.
+let media, chunks = [], audioBlob = null;
+let finalTranscript = "", srError = null, srActive = false;
+
+const $trans = () => $("transcricao");
+function showTrans() {
+  $("transLabel").style.display = "block";
+  $trans().classList.remove("hide");
+}
+function setStatus(msg, cls) {
+  const el = $("transStatus");
+  el.className = "hint" + (cls ? " " + cls : "");
+  el.innerHTML = (cls === "trabalhando" ? '<span class="dot"></span>' : "") + esc(msg);
+  el.classList.toggle("hide", !msg);
+}
+
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const recognition = SR ? new SR() : null;
 if (recognition) {
-  recognition.lang = "pt-BR"; recognition.continuous = true; recognition.interimResults = false;
+  recognition.lang = "pt-BR"; recognition.continuous = true; recognition.interimResults = true;
   recognition.onresult = (e) => {
+    let interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
-      if (e.results[i].isFinal) transcript += e.results[i][0].transcript + " ";
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finalTranscript += t + " ";
+      else interim += t;
     }
+    showTrans();
+    $trans().value = (finalTranscript + interim).trim();
   };
-  recognition.onerror = (e) => console.warn("[speech] erro de reconhecimento:", e.error);
+  recognition.onerror = (e) => {
+    srError = e.error;
+    console.warn("[speech] erro de reconhecimento:", e.error);
+  };
 }
 
 $("rec").onclick = async () => {
@@ -67,36 +173,82 @@ $("rec").onclick = async () => {
           "(ex.: http://192.168.x.x:8000), troque para http://localhost:8000.");
       }
       const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-      media = new MediaRecorder(s); chunks = []; transcript = "";
+      media = new MediaRecorder(s); chunks = [];
+      finalTranscript = ""; srError = null; audioBlob = null;
+      $trans().value = "";
       media.ondataavailable = (e) => chunks.push(e.data);
-      media.onstop = () => { audioBlob = new Blob(chunks, { type: "audio/webm" });
-        const a = $("aud"); a.src = URL.createObjectURL(audioBlob); a.classList.remove("hide"); };
-      media.start(); recognition?.start();
-      $("rec").textContent = "■ Parar"; $("rec").classList.add("gravando");
+      media.onstop = onRecordingStopped;
+      media.start(); srActive = false;
+      try { recognition?.start(); srActive = !!recognition; } catch { srActive = false; }
+      $("rec").textContent = "■ Parar";
+      $("rec").classList.add("gravando");
+      setStatus(recognition ? "Ouvindo… fale o relato do produtor" : "Gravando… (transcrição será feita no servidor)",
+                "trabalhando");
     } else {
-      media.stop(); recognition?.stop();
-      $("rec").textContent = "● Gravar a fala do produtor"; $("rec").classList.remove("gravando");
+      media.stop(); try { recognition?.stop(); } catch { /* já parado */ }
+      $("rec").textContent = "● Gravar novamente";
+      $("rec").classList.remove("gravando");
     }
   } catch (e) {
+    setStatus("Falha ao acessar o microfone: " + e.message, "erro");
     alert("Falha ao acessar o microfone: " + e.message +
       " (verifique se a permissão foi concedida nas configurações do navegador/site).");
   }
 };
-$("foto").onchange = (e) => { const f = e.target.files[0]; if (!f) return;
-  fotoURL = URL.createObjectURL(f); const p = $("prev"); p.src = fotoURL; p.classList.remove("hide"); };
 
-// ---- Passagem 1: Gemma no dispositivo (áudio+imagem -> ficha JSON) ----
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
-  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// Ao parar: monta o áudio (playback) e decide a fonte da transcrição.
+async function onRecordingStopped() {
+  audioBlob = new Blob(chunks, { type: "audio/webm" });
+  const a = $("aud"); a.src = URL.createObjectURL(audioBlob); a.classList.remove("hide");
+  marcarEvidencia("audio", { timestamp: new Date().toISOString(), temTranscript: false });
 
+  // dá um instante pro SR entregar os últimos resultados finais
+  await new Promise((r) => setTimeout(r, 350));
+  const jaTem = $trans().value.trim().length > 0;
+
+  // Fallback no servidor quando o navegador não transcreveu (sem SR, erro, ou vazio).
+  if (!jaTem && (!recognition || srError || !finalTranscript.trim())) {
+    if (GemmaWeb.mode !== "server") {
+      setStatus("Sem transcrição do navegador e servidor indisponível — digite a fala abaixo.", "erro");
+      showTrans(); return;
+    }
+    showTrans();
+    setStatus("Transcrevendo no servidor…", "trabalhando");
+    try {
+      const t = await GemmaWeb.transcribeViaServer(audioBlob);
+      $trans().value = t;
+      setStatus(t ? "Transcrição pronta (servidor). Confira e edite se precisar."
+                  : "Não foi possível entender a fala — digite manualmente.", t ? "" : "erro");
+    } catch (e) {
+      setStatus("Falha na transcrição do servidor: " + e.message + " — digite a fala abaixo.", "erro");
+    }
+  } else {
+    showTrans();
+    setStatus("Transcrição pronta (navegador). Confira e edite se precisar.", "");
+  }
+  if (evidencias.audio) { evidencias.audio.temTranscript = $trans().value.trim().length > 0; renderCadeia(); }
+}
+
+// ---- Passagem 1: Gemma (relato + foto do produto -> ficha JSON) ----
 let fichaAtual;
 $("proc").onclick = async () => {
-  $("proc").disabled = true; $("proc").textContent = "Processando no dispositivo…";
+  const transcript = $trans().value.trim();
+  const fotoProduto = evidencias.produto?.image || null;
+  if (!transcript && !fotoProduto) {
+    return alert("Capture o relato (áudio/texto) ou a foto do PRODUTO antes de processar.");
+  }
+  $("proc").disabled = true; $("proc").textContent = "Processando com o Gemma…";
   try {
-    fichaAtual = await GemmaWeb.extract({ transcript, imageSource: fotoURL, audioBlob });
+    const { ficha, relato } = await GemmaWeb.extract({ transcript, imageSource: fotoProduto, audioBlob });
+    fichaAtual = ficha;
+    if (relato) { $("relato").value = relato; $("relatoBox").classList.remove("hide"); }
+    else $("relatoBox").classList.add("hide");
     renderFicha();
+    const preenchidos = Object.values(ficha).filter((v) => v.value && v.value !== "não informado").length;
+    marcarEvidencia("gemma", { timestamp: new Date().toISOString(), preenchidos });
     $("fichaCard").classList.remove("hide");
     setStep(2);
+    $("fichaCard").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) { alert("Falha ao processar: " + e.message); }
   $("proc").disabled = false; $("proc").textContent = "Reprocessar";
 };
@@ -122,19 +274,22 @@ $("confirm").onclick = async () => {
   for (const span of $("ficha").querySelectorAll("[data-prov-de]")) {
     span.textContent = "confirmado"; span.className = "prov confirmado";
   }
+  marcarEvidencia("confirmacao", { timestamp: new Date().toISOString() });
   $("narr").textContent = "Gerando jornada…";
   $("narrCard").classList.remove("hide");
   setStep(3);
   $("narr").textContent = await GemmaWeb.narrate(fichaAtual, cooperativaNome());
+  marcarEvidencia("narrativa", { timestamp: new Date().toISOString() });
 };
 const cooperativaNome = () => "Cooperativa Exemplo (Resex Chico Mendes)";
 
 $("salvar").onclick = async () => {
   const id = "lote_" + Date.now();
   await putLote({ id, ficha: fichaAtual, narrativa: $("narr").textContent,
+                  evidencias: JSON.parse(JSON.stringify(evidencias)),
                   status: "rascunho_local", criado_em: new Date().toISOString() });
   await refreshFila();
-  alert("Lote salvo localmente. Publicaremos ao sincronizar.");
+  alert("Lote salvo localmente (com a cadeia de evidências). Publicaremos ao sincronizar.");
 };
 
 async function refreshFila() {
@@ -150,7 +305,8 @@ $("sync").onclick = async () => {
   for (const l of ls) {
     const r = await fetch("/api/publicar", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ficha_confirmada: l.ficha, narrativa: l.narrativa, cooperativa: cooperativaNome() }),
+      body: JSON.stringify({ ficha_confirmada: l.ficha, narrativa: l.narrativa,
+                             cooperativa: cooperativaNome(), evidencias: l.evidencias || {} }),
     });
     if (!r.ok) { alert("Falha ao publicar lote " + l.id); continue; }
     const info = await r.json();

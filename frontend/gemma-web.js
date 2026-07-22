@@ -75,7 +75,9 @@
     return mode;
   }
 
-  // ---------------- Passagem 1: EXTRAÇÃO (áudio+imagem -> ficha JSON) ----------------
+  // ---------------- Passagem 1: EXTRAÇÃO (relato+imagem -> {ficha, relato}) ----------------
+  // Retorno padronizado: { ficha, relato } — 'relato' é a fala reorganizada pelo
+  // Gemma (só no modo server hoje; vazio no webgpu).
   async function extract({ transcript, imageSource, audioBlob }) {
     if (mode === "server") return await serverExtract(transcript, imageSource);
     if (mode === "webgpu") {
@@ -89,9 +91,28 @@
       if (imageSource) parts.push("\nFOTO DO PRODUTO:", { imageSource });
       parts.push(EXTRACTION_TAIL);
       const raw = await llm.generateResponse(parts);
-      return parseFicha(raw);
+      return { ficha: parseFicha(raw), relato: transcript || "" };
     }
     throw new Error("Gemma indisponível. Inicie o servidor (python3 server/app.py na raiz do projeto) e recarregue a página.");
+  }
+
+  // ---------------- Fallback de ASR no servidor (só transcrição) ----------------
+  // Usado quando a Web Speech API do navegador não existe/falha. Converte o áudio
+  // gravado (webm/opus) em WAV mono — a Gemini API de ASR não aceita webm cru — e
+  // manda pro /api/transcrever. NÃO é o Gemma: é só transcrição (ver backend/asr).
+  async function transcribeViaServer(audioBlob) {
+    if (mode !== "server") {
+      throw new Error("Transcrição no servidor exige o servidor no ar (python3 server/app.py).");
+    }
+    const wav = await toWavMono(audioBlob, C.AUDIO_SR);
+    const audio_base64 = await blobToBase64(wav);
+    const r = await fetch("/api/transcrever", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ audio_base64 }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.erro || ("Falha na transcrição (" + r.status + ")"));
+    return data.transcript || "";
   }
 
   // ---------------- Passagem 2: NARRATIVA ----------------
@@ -120,14 +141,17 @@
       body: JSON.stringify(body),
     });
     if (!r.ok) throw new Error("Falha no servidor (" + r.status + ")");
-    return await r.json();
+    const data = await r.json();
+    // /api/extrair agora devolve { ficha, relato }.
+    return { ficha: data.ficha || data, relato: data.relato || "" };
   }
 
   async function blobUrlToBase64(url) {
-    const blob = await (await fetch(url)).blob();
-    const buf = await blob.arrayBuffer();
+    return await blobToBase64(await (await fetch(url)).blob());
+  }
+  async function blobToBase64(blob) {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
     let binary = "";
-    const bytes = new Uint8Array(buf);
     for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
     return btoa(binary);
   }
@@ -176,5 +200,5 @@
     return new Blob([b], { type: "audio/wav" });
   }
 
-  window.GemmaWeb = { init, extract, narrate, get mode() { return mode; } };
+  window.GemmaWeb = { init, extract, narrate, transcribeViaServer, get mode() { return mode; } };
 })();

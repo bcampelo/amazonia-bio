@@ -3,8 +3,8 @@
    arquivos SEMPRE vence quando há rede; o cache só é usado se a rede falhar (uso
    offline real). Isso evita servir JS antigo em cache depois de um deploy/edição
    (ex.: uma versão velha de gemma-web.js com lógica de mock já removida do código-fonte). */
-const CACHE = "bioamazon-v2";
-const SHELL = ["./", "./index.html", "./config.js", "./gemma-web.js", "./app.js", "./manifest.webmanifest"];
+const CACHE = "bioamazon-v4";
+const SHELL = ["./", "./index.html", "./config.js", "./evidence.js", "./gemma-web.js", "./app.js", "./manifest.webmanifest"];
 
 self.addEventListener("install", (e) =>
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())));

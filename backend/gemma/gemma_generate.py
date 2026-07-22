@@ -57,11 +57,16 @@ def gemma_generate(
     temperature: float = 0.2,
     max_tokens: int = 1024,
     json_mode: bool = False,
+    response_schema: Optional[dict] = None,
 ) -> str:
-    """Recebe um prompt (texto) + mídia opcional, devolve texto do Gemma."""
+    """Recebe um prompt (texto) + mídia opcional, devolve texto do Gemma.
+
+    response_schema: dict (JSON-Schema simplificado) para forçar SAÍDA ESTRUTURADA
+    nos backends que suportam (só o gemini hoje). Reduz drasticamente JSON truncado/
+    sujo. Ignorado pelos backends que não suportam."""
     backend = backend or DEFAULT_BACKEND
     if backend == "gemini":
-        return _gemini(prompt, images, temperature, max_tokens, json_mode)
+        return _gemini(prompt, images, temperature, max_tokens, json_mode, response_schema)
     if backend == "ollama":
         return _ollama(prompt, images, audio, temperature, max_tokens, json_mode)
     if backend == "mock":
@@ -72,7 +77,7 @@ def gemma_generate(
 # --------------------------------------------------------------------------- #
 # Backend REAL: Gemini API (Gemma hospedado — SDK oficial google-genai)
 # --------------------------------------------------------------------------- #
-def _gemini(prompt, images, temperature, max_tokens, json_mode) -> str:
+def _gemini(prompt, images, temperature, max_tokens, json_mode, response_schema=None) -> str:
     if not GEMINI_API_KEY:
         raise RuntimeError(
             "GEMINI_API_KEY não configurada. Crie uma grátis em "
@@ -99,6 +104,10 @@ def _gemini(prompt, images, temperature, max_tokens, json_mode) -> str:
         temperature=temperature,
         max_output_tokens=max(max_tokens, 2048),
         response_mime_type="application/json" if json_mode else None,
+        # Structured output: quando o chamador fornece um schema, o modelo é obrigado
+        # a devolver exatamente essa forma. Verificado que o Gemma via Gemini API
+        # respeita — e assim não trunca a ficha nem devolve texto fora do JSON.
+        response_schema=response_schema if json_mode else None,
     )
     response = client.models.generate_content(
         model=GEMINI_MODEL, contents=parts, config=config,

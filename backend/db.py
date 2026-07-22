@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS lotes (
     cooperativa TEXT NOT NULL,
     ficha_json TEXT NOT NULL,
     narrativa TEXT NOT NULL,
+    evidencias_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'publicado',
     criado_em TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -38,24 +39,31 @@ def _connect() -> sqlite3.Connection:
 def init_db() -> None:
     with _connect() as conn:
         conn.execute(_SCHEMA)
+        # migração idempotente: bancos criados antes da Fase 2 não têm a coluna de
+        # evidências. Adiciona sem quebrar dados existentes.
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(lotes)")}
+        if "evidencias_json" not in cols:
+            conn.execute("ALTER TABLE lotes ADD COLUMN evidencias_json TEXT NOT NULL DEFAULT '{}'")
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
     return {
         "slug": row["slug"], "produto": row["produto"], "cooperativa": row["cooperativa"],
         "ficha_confirmada": json.loads(row["ficha_json"]), "narrativa": row["narrativa"],
+        "evidencias": json.loads(row["evidencias_json"] or "{}"),
         "status": row["status"], "criado_em": row["criado_em"],
     }
 
 
 def salvar_lote(slug: str, produto: str, cooperativa: str, ficha_confirmada: dict,
-                 narrativa: str, status: str = "publicado") -> None:
+                 narrativa: str, evidencias: Optional[dict] = None,
+                 status: str = "publicado") -> None:
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO lotes (slug, produto, cooperativa, ficha_json, narrativa, status) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO lotes (slug, produto, cooperativa, ficha_json, narrativa, "
+            "evidencias_json, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (slug, produto, cooperativa, json.dumps(ficha_confirmada, ensure_ascii=False),
-             narrativa, status),
+             narrativa, json.dumps(evidencias or {}, ensure_ascii=False), status),
         )
 
 

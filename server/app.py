@@ -28,7 +28,8 @@ import qrcode  # noqa: E402
 from flask import Flask, abort, jsonify, request, render_template_string, send_from_directory  # noqa: E402
 
 from backend import db  # noqa: E402
-from backend.pipeline import extract, narrate  # noqa: E402
+from backend.pipeline import extract, estruturar_relato, narrate  # noqa: E402
+from backend.asr.transcribe import transcribe_audio  # noqa: E402
 
 FRONTEND_DIR = os.path.join(ROOT_DIR, "frontend")
 db.init_db()
@@ -47,26 +48,48 @@ def health():
     return jsonify({"status": "ok", "backend": DEFAULT_BACKEND})
 
 
-def _save_temp_image(image_base64: str) -> str:
-    raw = base64.b64decode(image_base64)
-    fd, path = tempfile.mkstemp(suffix=".jpg")
+def _save_temp(raw: bytes, suffix: str) -> str:
+    fd, path = tempfile.mkstemp(suffix=suffix)
     with os.fdopen(fd, "wb") as f:
         f.write(raw)
     return path
 
 
+@app.post("/api/transcrever")
+def api_transcrever():
+    """Fallback de ASR no SERVIDOR (só transcrição, não raciocínio — ver
+    backend/asr/transcribe.py). O navegador chama aqui quando a Web Speech API
+    não existe/falha, enviando o áudio já convertido para WAV mono. O TEXTO
+    volta e segue o fluxo normal; quem extrai/narra continua sendo o Gemma."""
+    data = request.get_json(force=True) or {}
+    audio_b64 = data.get("audio_base64")
+    if not audio_b64:
+        return jsonify({"erro": "audio_base64 ausente"}), 400
+    audio_path = _save_temp(base64.b64decode(audio_b64), ".wav")
+    try:
+        transcript = transcribe_audio(audio_path)
+    except Exception as e:  # noqa: BLE001 — erro de ASR não pode derrubar o fluxo
+        return jsonify({"erro": f"falha na transcrição: {e}"}), 502
+    finally:
+        os.remove(audio_path)
+    return jsonify({"transcript": transcript})
+
+
 @app.post("/api/extrair")
 def api_extrair():
+    """Passagem 1 completa: reorganiza o relato cru (Gemma) e extrai a ficha
+    estruturada (Gemma). Devolve a ficha E o relato organizado."""
     data = request.get_json(force=True) or {}
     transcript = data.get("transcript", "")
     image_b64 = data.get("image_base64")
-    image_path = _save_temp_image(image_b64) if image_b64 else None
+    image_path = _save_temp(base64.b64decode(image_b64), ".jpg") if image_b64 else None
     try:
-        ficha = extract(transcript, image=image_path)
+        relato = estruturar_relato(transcript)
+        ficha = extract(relato or transcript, image=image_path)
     finally:
         if image_path:
             os.remove(image_path)
-    return jsonify(ficha)
+    return jsonify({"ficha": ficha, "relato": relato})
 
 
 @app.post("/api/narrar")
@@ -99,10 +122,11 @@ def api_publicar():
     ficha_confirmada = data.get("ficha_confirmada") or {}
     narrativa = data.get("narrativa") or ""
     cooperativa = data.get("cooperativa") or "Cooperativa Exemplo (Resex Chico Mendes)"
+    evidencias = data.get("evidencias") or {}
     produto = (ficha_confirmada.get("produto") or {}).get("value", "lote")
 
     slug = f"{_slugify(produto)}-{uuid.uuid4().hex[:6]}"
-    db.salvar_lote(slug, produto, cooperativa, ficha_confirmada, narrativa)
+    db.salvar_lote(slug, produto, cooperativa, ficha_confirmada, narrativa, evidencias)
 
     url = request.host_url.rstrip("/") + "/p/" + slug
     return jsonify({"slug": slug, "url": url, "qr_base64": _qr_base64(url)})
@@ -127,6 +151,21 @@ _PUBLIC_PAGE = """<!doctype html>
   .campo b{display:block;font-size:11px;color:#6b7663;text-transform:capitalize}
   .narrativa{font-size:16px;line-height:1.6}
   .selo{font-size:13px;color:#456;margin-top:12px}
+  .cadeia{list-style:none;margin:0;padding:0}
+  .cadeia li{display:flex;gap:11px;padding:11px 0;border-bottom:1px solid #e0e6dd}
+  .cadeia li:last-child{border-bottom:0}
+  .cadeia .ci{width:26px;height:26px;border-radius:50%;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:13px;background:#eef3ea;color:#8a9683}
+  .cadeia li.feito .ci{background:#d7ecd9;color:var(--verde)}
+  .cadeia .cinfo{flex:1;min-width:0}
+  .cadeia .ctitulo{font-size:14px;font-weight:600}
+  .cadeia li.pendente .ctitulo{color:#9aa694;font-weight:500}
+  .cadeia .cmeta{font-size:12px;color:#6b7663;margin-top:2px;word-break:break-word}
+  .cadeia .cmeta .g{color:#1565c0}
+  .cadeia .cmeta .ng{color:#c62828}
+  .cadeia .cthumb{width:52px;height:52px;object-fit:cover;border-radius:8px;flex:none;border:1px solid #e0e6dd}
+  .selo-rastro{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.03em;
+    background:#d7ecd9;color:var(--verde);padding:4px 9px;border-radius:99px;margin-bottom:10px}
 </style>
 </head>
 <body>
@@ -143,9 +182,80 @@ _PUBLIC_PAGE = """<!doctype html>
     <div class="campo"><b>{{ k.replace("_", " ") }}</b>{{ v.value }}</div>
     {% endfor %}
   </div>
+  {% if cadeia %}
+  <div class="card">
+    <span class="selo-rastro">🔗 CADEIA DE EVIDÊNCIAS</span>
+    <h2>Rastreabilidade verificável</h2>
+    <ul class="cadeia">
+      {% for item in cadeia %}
+      <li class="{{ 'feito' if item.feito else 'pendente' }}">
+        {% if item.image %}<img class="cthumb" src="{{ item.image }}" alt="{{ item.titulo }}"/>
+        {% else %}<span class="ci">{{ '✓' if item.feito else item.icon }}</span>{% endif %}
+        <span class="cinfo"><span class="ctitulo">{{ item.titulo }}</span>
+          {% if item.meta %}<span class="cmeta">{{ item.meta | safe }}</span>{% endif %}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    <p class="selo" style="margin-top:12px">Localização exibida de forma aproximada por privacidade;
+      a coordenada exata fica registrada com a cooperativa para auditoria.</p>
+  </div>
+  {% endif %}
 </main>
 </body>
 </html>"""
+
+
+# Definição da cadeia de evidências (mesma ordem/rótulos do app).
+_CADEIA_DEF = [
+    ("produtor", "👤", "Foto do produtor"),
+    ("coleta", "🌴", "Foto da coleta"),
+    ("produto", "🫐", "Foto do produto"),
+    ("audio", "🎙️", "Relato em áudio do produtor"),
+    ("gemma", "🤖", "Análise do Gemma (ficha técnica)"),
+    ("confirmacao", "✔️", "Confirmação do operador"),
+    ("narrativa", "📖", "Narrativa final"),
+]
+
+
+def _fmt_hora(iso: str) -> str:
+    """ISO (UTC, do navegador) -> 'DD/MM/AAAA HH:MM'. Tolerante a formato."""
+    if not iso:
+        return ""
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except Exception:  # noqa: BLE001
+        return iso[:16].replace("T", " ")
+
+
+def _gps_publico(gps: dict) -> str:
+    """PRIVACIDADE: em público mostramos a localização com precisão REDUZIDA
+    (~1 km, 2 casas decimais). A coordenada exata fica só no banco, para auditoria
+    da cooperativa — não expomos a casa/roçado de ninguém num QR público."""
+    if not gps or not gps.get("ok"):
+        from markupsafe import escape
+        motivo = escape((gps or {}).get("motivo", "não registrado"))
+        return f'<span class="ng">sem GPS — {motivo}</span>'
+    lat, lng = round(float(gps["lat"]), 2), round(float(gps["lng"]), 2)
+    return f'<span class="g">📍 ~{lat}, {lng} (aprox.)</span>'
+
+
+def _prep_cadeia(evidencias: dict) -> list:
+    itens = []
+    for key, icon, titulo in _CADEIA_DEF:
+        ev = evidencias.get(key)
+        item = {"icon": icon, "titulo": titulo, "feito": bool(ev),
+                "image": None, "meta": ""}
+        if ev:
+            if key in ("produtor", "coleta", "produto"):
+                fonte = "📷 câmera ao vivo" if ev.get("fonte") == "camera" else "📎 arquivo"
+                item["image"] = ev.get("image")
+                item["meta"] = f'{fonte} · {_fmt_hora(ev.get("timestamp"))} · {_gps_publico(ev.get("gps"))}'
+            else:
+                item["meta"] = _fmt_hora(ev.get("timestamp"))
+        itens.append(item)
+    return itens
 
 
 @app.get("/p/<slug>")
@@ -154,9 +264,11 @@ def pagina_publica(slug):
     if not registro:
         abort(404)
     produto = (registro["ficha_confirmada"].get("produto") or {}).get("value", "Produto")
+    cadeia = _prep_cadeia(registro.get("evidencias") or {})
     return render_template_string(
         _PUBLIC_PAGE, produto=produto, narrativa=registro["narrativa"],
         cooperativa=registro["cooperativa"], ficha=registro["ficha_confirmada"],
+        cadeia=cadeia,
     )
 
 

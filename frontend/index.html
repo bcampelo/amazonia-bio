@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
 <title>BioAmazon IA — Registro de Lote</title>
 <link rel="manifest" href="manifest.webmanifest"/>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%231b5e20'/%3E%3Ctext y='72' x='50' font-size='60' text-anchor='middle'%3E%F0%9F%8C%B3%3C/text%3E%3C/svg%3E"/>
 <meta name="theme-color" content="#1b5e20"/>
 <style>
   :root{
@@ -75,6 +76,24 @@
   audio{width:100%;margin-top:10px}
   img#prev{width:100%;max-height:260px;object-fit:cover;border-radius:12px;margin-top:10px}
 
+  textarea{width:100%;border:1.5px solid var(--linha);border-radius:10px;padding:11px 12px;
+    font-size:14px;font-family:inherit;line-height:1.5;color:var(--texto);resize:vertical;
+    min-height:76px;margin-top:10px;transition:border-color .15s;background:#fff}
+  textarea:focus{outline:none;border-color:var(--verde-500)}
+  textarea::placeholder{color:#9aa694}
+  .hint{font-size:12px;color:var(--texto-suave);margin:9px 0 0;display:flex;align-items:center;gap:6px}
+  .hint.trabalhando{color:var(--azul)}
+  .hint.erro{color:var(--vermelho)}
+  .hint .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;
+    animation:blink 1.1s infinite}
+  @keyframes blink{0%,100%{opacity:.3}50%{opacity:1}}
+  .campo-label{display:block;font-size:11px;color:var(--texto-suave);text-transform:uppercase;
+    letter-spacing:.04em;font-weight:700;margin-top:14px}
+  .relato-box{background:var(--verde-50);border:1px solid var(--verde-100);border-radius:12px;
+    padding:4px 12px 12px;margin-bottom:6px}
+  .relato-box .campo-label{color:var(--verde-700)}
+  .relato-box textarea{background:#fff}
+
   .narrativa-texto{font-size:15.5px;line-height:1.65;color:var(--texto);margin:0}
   .fila-info{font-size:13.5px;color:var(--texto-suave);margin:0 0 4px}
 
@@ -83,6 +102,58 @@
   .qr-box a{display:inline-block;margin-top:12px;font-size:13px;color:var(--verde-600);
     word-break:break-all;text-decoration:none;font-weight:600}
   .qr-box a:hover{text-decoration:underline}
+
+  /* ---- Tiles de captura de foto (evidência) ---- */
+  .tiles{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:4px}
+  .tile{border:1.5px dashed var(--linha);border-radius:12px;padding:10px;text-align:center;
+    cursor:pointer;background:var(--verde-50);transition:border-color .15s,background .15s;min-height:118px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}
+  .tile:hover{border-color:var(--verde-500);background:var(--verde-100)}
+  .tile.ok{border-style:solid;border-color:var(--verde-500);background:#fff}
+  .tile .tico{font-size:22px}
+  .tile .tnome{font-size:11.5px;font-weight:700;color:var(--texto-suave);text-transform:uppercase;letter-spacing:.02em}
+  .tile.principal .tnome{color:var(--verde-700)}
+  .tile img{width:100%;height:64px;object-fit:cover;border-radius:8px}
+  .tile .tbadges{display:flex;flex-wrap:wrap;gap:3px;justify-content:center}
+  .badge{font-size:9px;padding:2px 5px;border-radius:6px;font-weight:700;background:#eef3ea;color:#456;line-height:1.3}
+  .badge.cam{background:var(--verde-100);color:var(--verde-700)}
+  .badge.arq{background:var(--laranja-bg);color:var(--laranja)}
+  .badge.gps{background:var(--azul-bg);color:var(--azul)}
+  .badge.nogps{background:#fdecea;color:var(--vermelho)}
+  .tile-hint{font-size:11.5px;color:var(--texto-suave);margin:9px 0 2px}
+
+  /* ---- Overlay da câmera ---- */
+  .cam-overlay{position:fixed;inset:0;z-index:100;background:rgba(10,20,10,.82);
+    display:flex;align-items:center;justify-content:center;padding:14px}
+  .cam-frame{background:#12160f;border-radius:16px;width:100%;max-width:440px;overflow:hidden;
+    box-shadow:0 12px 40px rgba(0,0,0,.5)}
+  .cam-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;
+    color:#fff;font-weight:700;font-size:14px}
+  .cam-x{background:transparent;color:#fff;width:auto;margin:0;padding:2px 8px;font-size:18px;border-radius:8px}
+  .cam-x:hover{background:rgba(255,255,255,.15)}
+  .cam-body{position:relative;background:#000;aspect-ratio:4/3;display:flex;align-items:center;justify-content:center}
+  .cam-video{width:100%;height:100%;object-fit:cover}
+  .cam-msg{color:#fff;font-size:13px;padding:20px;text-align:center;line-height:1.5}
+  .cam-controls{display:flex;flex-direction:column;gap:8px;padding:12px 14px}
+  .cam-shot{margin:0}
+  .cam-file{color:#cfe3c8;font-size:12.5px;text-align:center;cursor:pointer;font-weight:600;padding:4px}
+  .cam-file:hover{color:#fff}
+  .cam-gps{color:#cfe3c8;margin:0 14px 12px;justify-content:center}
+  .cam-gps.erro{color:#ffb4a8}
+
+  /* ---- Cadeia de evidências (linha do tempo) ---- */
+  .cadeia{list-style:none;margin:0;padding:0}
+  .cadeia li{display:flex;gap:11px;padding:9px 0;border-bottom:1px solid var(--linha)}
+  .cadeia li:last-child{border-bottom:0}
+  .cadeia .ci{width:24px;height:24px;border-radius:50%;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:13px;background:var(--linha);color:#8a9683}
+  .cadeia li.feito .ci{background:var(--verde-100);color:var(--verde-700)}
+  .cadeia .cinfo{flex:1;min-width:0}
+  .cadeia .ctitulo{font-size:13.5px;font-weight:600;color:var(--texto)}
+  .cadeia li.pendente .ctitulo{color:#9aa694;font-weight:500}
+  .cadeia .cmeta{font-size:11.5px;color:var(--texto-suave);margin-top:2px;word-break:break-word}
+  .cadeia .cmeta .g{color:var(--azul)}
+  .cadeia .cmeta .ng{color:var(--vermelho)}
 
   .hide{display:none}
 </style>
@@ -104,18 +175,41 @@
   </div>
 
   <div class="card" id="cap">
-    <h2><span class="num">1</span>Capturar o lote</h2>
+    <h2><span class="num">1</span>Capturar evidências</h2>
+    <p class="tile-hint">Fotos são tiradas na hora, com GPS e horário carimbados. Toque para capturar.</p>
+    <div class="tiles">
+      <div class="tile" id="tileProdutor" data-tipo="produtor">
+        <span class="tico">👤</span><span class="tnome">Produtor</span>
+      </div>
+      <div class="tile" id="tileColeta" data-tipo="coleta">
+        <span class="tico">🌴</span><span class="tnome">Coleta</span>
+      </div>
+      <div class="tile principal" id="tileProduto" data-tipo="produto">
+        <span class="tico">🫐</span><span class="tnome">Produto</span>
+      </div>
+    </div>
+    <p class="tile-hint">A foto do <b>Produto</b> é a que o Gemma usa para identificar. Produtor e coleta reforçam a rastreabilidade.</p>
+
     <button id="rec" class="rec">● Gravar a fala do produtor</button>
     <audio id="aud" controls class="hide"></audio>
-    <label class="upload">Foto do produto
-      <input type="file" id="foto" accept="image/*" capture="environment"/>
-    </label>
-    <img id="prev" class="hide"/>
+    <p id="transStatus" class="hint hide"></p>
+    <label class="campo-label" for="transcricao" id="transLabel" style="display:none">Fala do produtor (transcrição — pode editar)</label>
+    <textarea id="transcricao" class="hide" placeholder="A transcrição da fala aparece aqui. Você pode corrigir ou digitar direto."></textarea>
+
     <button id="proc" class="sec">Processar com o Gemma</button>
+  </div>
+
+  <div class="card" id="cadeiaCard">
+    <h2><span class="num">🔗</span>Cadeia de evidências</h2>
+    <ul class="cadeia" id="cadeia"></ul>
   </div>
 
   <div class="card hide" id="fichaCard">
     <h2><span class="num">2</span>Conferir os fatos (Gemma)</h2>
+    <div class="relato-box hide" id="relatoBox">
+      <label class="campo-label" for="relato">Relato organizado pelo Gemma (pode editar)</label>
+      <textarea id="relato" placeholder="O Gemma organiza a fala do produtor aqui, sem inventar nada."></textarea>
+    </div>
     <div id="ficha"></div>
     <button id="confirm">Confirmar e gerar jornada</button>
   </div>
@@ -141,6 +235,7 @@
   </div>
 </main>
 <script src="config.js"></script>
+<script src="evidence.js"></script>
 <script src="gemma-web.js"></script>
 <script src="app.js"></script>
 </body>

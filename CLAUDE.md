@@ -58,7 +58,14 @@ the Python prompts/schema unchanged.
 
 Do not introduce Whisper, Llama, or any other model as the reasoning "brain" — extraction
 and narrative generation must always go through Gemma. The one narrow exception is speech
-transcription in the browser dev path (see below), which is not reasoning, just ASR.
+transcription (ASR), which is not reasoning, just turning sound into text. There are now
+**two** ASR paths, both outside `gemma_generate` on purpose: (1) the browser Web Speech API
+(primary, on-device, in `frontend/app.js`); (2) a **server-side fallback**,
+`backend/asr/transcribe.py::transcribe_audio()`, used when the browser has no/failed ASR
+(Safari, Brave, Firefox, no Google backend). The server fallback calls a plain Gemini
+multimodal model (`GEMINI_ASR_MODEL`, default `gemini-flash-latest`) **only to transcribe** —
+Gemma still does 100% of extraction/narrative. It lives in its own `backend/asr/` package,
+NOT as a `gemma_generate` backend, precisely so nobody confuses ASR with the Gemma brain.
 
 ### The `gemini` backend — real Gemma, no local weights
 
@@ -71,12 +78,20 @@ testing, not assumed:
   consumed by the hidden thinking trace and the final answer comes back empty. `_gemini()`
   enforces a floor of `max(max_tokens, 2048)` internally so callers never need to know
   about this quirk — don't lower this floor without re-testing for empty responses.
+  **Concretely observed:** `narrate()` at `max_tokens=400` (floor 2048) returned an EMPTY
+  narrative because the thinking trace alone spilled past ~1350 tokens and varied per call.
+  Two fixes now in place: extraction passes a **`response_schema`** (structured output — the
+  model can't ramble, so the ficha never truncates and stopped coming back with empty
+  fields), and `narrate()`/`estruturar_relato()` pass a **generous `max_tokens` (8192/4096)**.
+  A higher cap does NOT slow generation (the model emits STOP when done) — it only leaves
+  room for the answer after the hidden thinking. Never drop these budgets without re-testing.
 - **Audio input is rejected** (`"Audio input modality is not enabled for this model"`) for
-  both Gemma models above — text and image only. This is why the browser flow transcribes
-  speech client-side (Web Speech API, `frontend/app.js`) instead of sending audio to the
-  server; Gemma still does 100% of the actual extraction/narrative reasoning. True
-  audio-native Gemma is expected only on the Android/LiteRT-LM path, which already
-  documented this same limitation for Ollama-on-laptop before the `gemini` backend existed.
+  both Gemma models above — text and image only. This is why speech is transcribed by ASR
+  (browser Web Speech API, or the `backend/asr/` server fallback — see the ASR note above)
+  and only the resulting TEXT reaches Gemma; Gemma still does 100% of the actual extraction/
+  narrative reasoning. True audio-native Gemma is expected only on the Android/LiteRT-LM
+  path, which already documented this same limitation for Ollama-on-laptop before the
+  `gemini` backend existed.
 - `.env` (git-ignored) is loaded by a small hand-rolled parser in `gemma_generate.py`
   (`_load_dotenv`) — no `python-dotenv` dependency. `.env.example` documents the vars.
 
@@ -186,6 +201,34 @@ confirming — confirming reads the current input values back into `fichaAtual` 
 `provenance: "confirmado"`. Saving still goes to IndexedDB. Sync now really POSTs each
 pending lote to `/api/publicar` and displays the returned QR image + public link in the UI
 (`#publicadoCard`) — it no longer fabricates a slug client-side.
+
+### Evidence chain (`frontend/evidence.js`) — the traceability spine (Phase 2)
+
+Every photo is captured as an **auditable evidence item** stamped with GPS + timestamp +
+source at the moment of capture. `evidence.js` (`window.Evidence`) owns two primitives:
+`captureGPS()` (resolves `{ok,lat,lng,accuracy}` or `{ok:false,motivo}` — never rejects; needs
+a secure context) and `capturePhoto(label)` (a `getUserMedia` + `<canvas>` live-camera modal).
+
+**Deliberate decision — do NOT force "camera only" via `<input capture>`:** that attribute is
+a no-op on desktop (where the demo runs on Mac Chrome — it just opens the file picker), so it
+gives a false sense of security. Instead the in-app live camera is the default (works on
+desktop AND mobile, lets us stamp GPS/time at the shutter), and a labeled **file-upload
+fallback stays** inside the camera modal — but the evidence records its `fonte` as
+`"camera"` (ao vivo / verificada) vs `"arquivo"` (não verificada). Trust level becomes a
+recorded, auditable field rather than a blocked action. Do not "remove the gallery" by
+hard-blocking uploads — it would break the desktop demo and weaken, not strengthen, trust.
+
+`app.js` holds the chain model `CADEIA` (produtor · coleta · produto · audio · gemma ·
+confirmacao · narrativa) and `evidencias{}`; each step calls `marcarEvidencia()` which
+re-renders the visible timeline (`#cadeia`). The **produto** photo is the one fed to Gemma.
+The whole `evidencias` object is persisted (`evidencias_json` column in `db.py`, sent via
+`/api/publicar`) and rendered on the public page as a "Cadeia de evidências" card.
+
+**Privacy (architect call):** the operator/app view and the DB keep full GPS precision for
+audit, but the **public page rounds coordinates to ~2 decimals (~1 km)** via
+`server/app.py::_gps_publico` — a public QR must not pin an extractivist's home/roçado. When
+touching the public page, keep dynamic strings escaped (`_gps_publico` uses `markupsafe`) and
+the coordinate-rounding intact.
 
 ### Android (`android/README_LITERT.md`, `docs/EDGE_RESEARCH.md`)
 
