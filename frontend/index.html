@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<title>BioAmazon IA — Registro de Lote</title>
+<link rel="manifest" href="manifest.webmanifest"/>
+<meta name="theme-color" content="#1b5e20"/>
+<style>
+  :root{
+    --verde-900:#0f3d13;--verde-700:#1b5e20;--verde-600:#2e7d32;--verde-500:#43a047;
+    --verde-100:#e8f5e9;--verde-50:#f3f8f1;
+    --bg:#f7f8f6;--card:#fff;--linha:#e6e9e2;--texto:#1a2016;--texto-suave:#5c6b57;
+    --radius:16px;--radius-sm:10px;
+    --shadow:0 1px 2px rgba(15,61,19,.06),0 4px 16px rgba(15,61,19,.06);
+    --azul:#1565c0;--azul-bg:#e3f2fd;--rosa:#ad1457;--rosa-bg:#fce4ec;
+    --laranja:#e65100;--laranja-bg:#fff3e0;--vermelho:#c62828;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    background:var(--bg);color:var(--texto);-webkit-font-smoothing:antialiased}
+
+  header{position:sticky;top:0;z-index:10;background:linear-gradient(135deg,var(--verde-700),var(--verde-600));
+    color:#fff;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;
+    box-shadow:0 2px 12px rgba(15,61,19,.18)}
+  .brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px;letter-spacing:-.01em}
+  .status-group{display:flex;gap:6px;align-items:center}
+  .pill{font-size:11px;padding:4px 9px;border-radius:999px;background:rgba(255,255,255,.16);white-space:nowrap;transition:background .15s}
+  .pill.ok{background:rgba(255,255,255,.28)}
+  .pill.erro{background:var(--vermelho);color:#fff;font-weight:600}
+
+  main{padding:16px 16px 40px;max-width:640px;margin:0 auto}
+
+  .steps{display:flex;gap:6px;margin:16px 0 20px}
+  .step{flex:1;height:4px;border-radius:99px;background:var(--linha);transition:background .2s}
+  .step.done{background:var(--verde-500)}
+  .step.active{background:var(--verde-700)}
+
+  .card{background:var(--card);border:1px solid var(--linha);border-radius:var(--radius);
+    padding:20px;margin-bottom:16px;box-shadow:var(--shadow)}
+  .card h2{font-size:12px;margin:0 0 14px;color:var(--verde-600);text-transform:uppercase;
+    letter-spacing:.06em;font-weight:700;display:flex;align-items:center;gap:8px}
+  .card h2 .num{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;
+    border-radius:50%;background:var(--verde-100);color:var(--verde-700);font-size:11px;flex:none}
+
+  button{background:var(--verde-600);color:#fff;border:0;border-radius:var(--radius-sm);
+    padding:13px 16px;font-size:15px;font-weight:600;width:100%;margin-top:10px;cursor:pointer;
+    transition:background .15s,transform .05s}
+  button:hover{background:var(--verde-700)}
+  button:active{transform:scale(.99)}
+  button:disabled{opacity:.55;cursor:not-allowed}
+  button.sec{background:#fff;color:var(--verde-600);border:1.5px solid var(--verde-600)}
+  button.sec:hover{background:var(--verde-50)}
+  button.rec.gravando{background:var(--vermelho);animation:pulse 1.6s infinite}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(198,40,40,.35)}50%{box-shadow:0 0 0 9px rgba(198,40,40,0)}}
+
+  .upload{display:block;margin-top:14px;font-size:13px;color:var(--texto-suave);font-weight:600}
+  input[type=file]{display:block;width:100%;margin-top:8px;font-size:13px}
+
+  .campo{border-bottom:1px solid var(--linha);padding:10px 0}
+  .campo:last-child{border-bottom:0}
+  .campo label{display:block;font-size:11px;color:var(--texto-suave);text-transform:capitalize;
+    margin-bottom:5px;font-weight:600;letter-spacing:.02em}
+  .campo input[type=text]{width:100%;border:1.5px solid var(--linha);border-radius:8px;padding:9px 10px;
+    font-size:14px;margin:0;font-family:inherit;transition:border-color .15s}
+  .campo input[type=text]:focus{outline:none;border-color:var(--verde-500)}
+  .prov{font-size:10.5px;padding:3px 8px;border-radius:99px;background:#eef3ea;color:#456;
+    display:inline-block;margin-top:7px;font-weight:600;text-transform:uppercase;letter-spacing:.02em}
+  .prov.audio{background:var(--azul-bg);color:var(--azul)}
+  .prov.imagem{background:var(--rosa-bg);color:var(--rosa)}
+  .prov.inferido{background:var(--laranja-bg);color:var(--laranja)}
+  .prov.confirmado{background:var(--verde-100);color:var(--verde-700)}
+
+  audio{width:100%;margin-top:10px}
+  img#prev{width:100%;max-height:260px;object-fit:cover;border-radius:12px;margin-top:10px}
+
+  .narrativa-texto{font-size:15.5px;line-height:1.65;color:var(--texto);margin:0}
+  .fila-info{font-size:13.5px;color:var(--texto-suave);margin:0 0 4px}
+
+  .qr-box{text-align:center}
+  .qr-box img{width:180px;height:180px;border-radius:12px;border:1px solid var(--linha);padding:10px;background:#fff}
+  .qr-box a{display:inline-block;margin-top:12px;font-size:13px;color:var(--verde-600);
+    word-break:break-all;text-decoration:none;font-weight:600}
+  .qr-box a:hover{text-decoration:underline}
+
+  .hide{display:none}
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">🌳 BioAmazon IA</span>
+  <span class="status-group">
+    <span class="pill" id="gemma">Gemma: —</span>
+    <span class="pill" id="net">offline</span>
+  </span>
+</header>
+<main>
+  <div class="steps">
+    <div class="step" data-step="1"></div>
+    <div class="step" data-step="2"></div>
+    <div class="step" data-step="3"></div>
+    <div class="step" data-step="4"></div>
+  </div>
+
+  <div class="card" id="cap">
+    <h2><span class="num">1</span>Capturar o lote</h2>
+    <button id="rec" class="rec">● Gravar a fala do produtor</button>
+    <audio id="aud" controls class="hide"></audio>
+    <label class="upload">Foto do produto
+      <input type="file" id="foto" accept="image/*" capture="environment"/>
+    </label>
+    <img id="prev" class="hide"/>
+    <button id="proc" class="sec">Processar com o Gemma</button>
+  </div>
+
+  <div class="card hide" id="fichaCard">
+    <h2><span class="num">2</span>Conferir os fatos (Gemma)</h2>
+    <div id="ficha"></div>
+    <button id="confirm">Confirmar e gerar jornada</button>
+  </div>
+
+  <div class="card hide" id="narrCard">
+    <h2><span class="num">3</span>Jornada gerada</h2>
+    <p id="narr" class="narrativa-texto"></p>
+    <button id="salvar">Salvar lote (local, offline)</button>
+  </div>
+
+  <div class="card">
+    <h2>Fila de sincronização</h2>
+    <p id="fila" class="fila-info">nenhum lote pendente</p>
+    <button id="sync" class="sec">Sincronizar e publicar</button>
+  </div>
+
+  <div class="card hide" id="publicadoCard">
+    <h2><span class="num">4</span>Página pública + QR</h2>
+    <div class="qr-box">
+      <img id="qrImg"/>
+      <p><a id="linkPublico" target="_blank" rel="noopener"></a></p>
+    </div>
+  </div>
+</main>
+<script src="config.js"></script>
+<script src="gemma-web.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

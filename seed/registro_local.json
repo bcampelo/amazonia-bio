@@ -1,0 +1,43 @@
+{
+  "ficha_confirmada": {
+    "produto": {
+      "value": "Açaí",
+      "provenance": "confirmado"
+    },
+    "variedade": {
+      "value": "Açaí-solteiro (Euterpe precatoria)",
+      "provenance": "confirmado"
+    },
+    "origem": {
+      "value": "Chico Mendes",
+      "provenance": "confirmado"
+    },
+    "metodo_coleta_manejo": {
+      "value": "Coleta manual, escalada de palmeira nativa em floresta em pé",
+      "provenance": "confirmado"
+    },
+    "epoca_safra": {
+      "value": "março",
+      "provenance": "confirmado"
+    },
+    "caracteristicas_sensoriais": {
+      "value": "Polpa encorpada, cor roxa intensa, sabor amazônico",
+      "provenance": "confirmado"
+    },
+    "praticas_sustentaveis": {
+      "value": "Extrativismo de floresta em pé, sem desmatamento",
+      "provenance": "confirmado"
+    },
+    "volume": {
+      "value": "30",
+      "provenance": "confirmado"
+    },
+    "unidade": {
+      "value": "lata",
+      "provenance": "confirmado"
+    }
+  },
+  "narrativa": "Desta floresta em pé nasce um açaí com nome e origem. Colhido à mão por extrativistas que conhecem cada palmeira, o fruto carrega a história de um território que se mantém vivo justamente porque tem valor. Atestado por Cooperativa Exemplo, este lote chega até você com sua jornada registrada — do pé ao ponto de venda — como prova de que a floresta vale mais em pé.\n\n[narrativa gerada pelo Gemma a partir apenas dos fatos confirmados]",
+  "cooperativa": "Cooperativa Exemplo (Resex Chico Mendes)",
+  "status": "rascunho_local"
+}
