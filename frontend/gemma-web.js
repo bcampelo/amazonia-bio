@@ -38,41 +38,83 @@
       ".\n\nFATOS CONFIRMADOS:\n" + fatos + "\n\nEscreva apenas a narrativa.";
   };
 
-  // ---------------- Inicialização ----------------
-  async function init(onStatus) {
-    onStatus?.("verificando servidor…");
+  // ---------------- Inicialização (ARQUITETURA LOCAL-FIRST / Edge AI) ----------------
+  // Ordem: ON-DEVICE (WebGPU) PRIMEIRO -> nuvem (servidor) como FALLBACK. O modo
+  // local é o objetivo; o remoto só entra quando o on-device não está disponível
+  // (sem modelo, sem WebGPU) ou quando o operador força "nuvem" nas Configurações.
+  let serverBackend = null;
+
+  function iaPref() {
+    try { return localStorage.getItem("bioamazon.ia_mode") || "auto"; } catch { return "auto"; }
+  }
+
+  // O modelo on-device é grande e baixado à parte. Perguntamos ao servidor se ele
+  // existe (endpoint limpo) em vez de "sondar" o arquivo no navegador — isso evita
+  // um 404 no console. O resultado é cacheado para funcionar offline depois.
+  async function modeloDisponivel() {
     try {
-      const r = await fetch("/api/health");
+      const r = await fetch("/api/modelo_local");
       if (r.ok) {
-        const info = await r.json();
-        mode = "server";
-        onStatus?.(`Gemma pronto (servidor, backend=${info.backend})`);
-        return mode;
+        const d = await r.json();
+        try { localStorage.setItem("bioamazon.modelo_local", d.disponivel ? "1" : "0"); } catch { /* */ }
+        return !!d.disponivel;
       }
-      throw new Error("servidor respondeu " + r.status);
-    } catch (e) {
-      console.warn("[gemma-web] servidor indisponível:", e);
+    } catch { /* offline: usa o último resultado conhecido */ }
+    try { return localStorage.getItem("bioamazon.modelo_local") === "1"; } catch { return false; }
+  }
+
+  async function initOnDevice() {
+    if (!("gpu" in navigator)) throw new Error("WebGPU indisponível neste navegador");
+    if (!(await modeloDisponivel()))
+      throw new Error("modelo on-device ausente (" + C.MODEL_URL + ") — ver frontend/models/README.txt");
+    // runtime local (offline); se o vendor sumir, cai no CDN.
+    let esm = C.TASKS_GENAI_ESM, wasm = C.WASM_BASE;
+    let mod;
+    try { mod = await import(esm); }
+    catch { esm = C.TASKS_GENAI_ESM_CDN; wasm = C.WASM_BASE_CDN; mod = await import(esm); }
+    const { FilesetResolver, LlmInference } = mod;
+    const genai = await FilesetResolver.forGenAiTasks(wasm);
+    llm = await LlmInference.createFromOptions(genai, {
+      baseOptions: { modelAssetPath: C.MODEL_URL },
+      maxTokens: C.MAX_TOKENS, topK: C.TOP_K, temperature: C.TEMPERATURE,
+      maxNumImages: C.MAX_IMAGES, supportAudio: C.SUPPORT_AUDIO,
+    });
+    mode = "webgpu";
+  }
+
+  async function initServidor() {
+    const r = await fetch("/api/health");
+    if (!r.ok) throw new Error("servidor respondeu " + r.status);
+    serverBackend = (await r.json()).backend;
+    mode = "server";
+  }
+
+  async function init(onStatus) {
+    const pref = iaPref();
+    if (pref !== "nuvem") {              // LOCAL-FIRST: tenta on-device
+      try { onStatus?.("procurando IA no dispositivo…"); await initOnDevice();
+            onStatus?.(engineLabel()); return mode; }
+      catch (e) { console.warn("[gemma-web] on-device indisponível:", e.message); }
     }
-    if ("gpu" in navigator) {
-      try {
-        onStatus?.("servidor indisponível — tentando WebGPU on-device…");
-        const { FilesetResolver, LlmInference } = await import(C.TASKS_GENAI_ESM);
-        const genai = await FilesetResolver.forGenAiTasks(C.WASM_BASE);
-        onStatus?.("abrindo o modelo Gemma (1ª vez baixa)…");
-        llm = await LlmInference.createFromOptions(genai, {
-          baseOptions: { modelAssetPath: C.MODEL_URL },
-          maxTokens: C.MAX_TOKENS, topK: C.TOP_K, temperature: C.TEMPERATURE,
-          maxNumImages: C.MAX_IMAGES, supportAudio: C.SUPPORT_AUDIO
-        });
-        mode = "webgpu"; onStatus?.("Gemma pronto (on-device, WebGPU)");
-        return mode;
-      } catch (e) {
-        console.warn("[gemma-web] WebGPU indisponível:", e);
-      }
+    if (pref !== "local") {              // fallback: nuvem
+      try { onStatus?.("conectando à IA na nuvem (fallback)…"); await initServidor();
+            onStatus?.(engineLabel()); return mode; }
+      catch (e) { console.warn("[gemma-web] nuvem indisponível:", e.message); }
     }
-    mode = "indisponivel";
-    onStatus?.("Gemma INDISPONÍVEL — inicie o servidor (python3 server/app.py) e recarregue");
-    return mode;
+    mode = "indisponivel"; onStatus?.(engineLabel()); return mode;
+  }
+
+  // Ollama roda na MÁQUINA do operador (edge) — é inferência LOCAL, não nuvem.
+  // Só o backend "gemini" é remoto/nuvem.
+  function servidorEhLocal() { return mode === "server" && serverBackend && serverBackend !== "gemini"; }
+
+  function engineLabel() {
+    if (mode === "webgpu") return "no dispositivo (WebGPU, offline)";
+    if (servidorEhLocal()) return "no dispositivo (" + serverBackend + ", local)";
+    if (mode === "server") return "nuvem — fallback (" + (serverBackend || "gemini") + ")";
+    return iaPref() === "local"
+      ? "indisponível (modo local forçado, sem modelo on-device)"
+      : "indisponível";
   }
 
   // ---------------- Passagem 1: EXTRAÇÃO (relato+imagem -> {ficha, relato}) ----------------
@@ -91,7 +133,7 @@
       if (imageSource) parts.push("\nFOTO DO PRODUTO:", { imageSource });
       parts.push(EXTRACTION_TAIL);
       const raw = await llm.generateResponse(parts);
-      return { ficha: parseFicha(raw), relato: transcript || "" };
+      return { ficha: parseFicha(raw), relato: transcript || "", ms: 0 };
     }
     throw new Error("Gemma indisponível. Inicie o servidor (python3 server/app.py na raiz do projeto) e recarregue a página.");
   }
@@ -101,9 +143,8 @@
   // gravado (webm/opus) em WAV mono — a Gemini API de ASR não aceita webm cru — e
   // manda pro /api/transcrever. NÃO é o Gemma: é só transcrição (ver backend/asr).
   async function transcribeViaServer(audioBlob) {
-    if (mode !== "server") {
-      throw new Error("Transcrição no servidor exige o servidor no ar (python3 server/app.py).");
-    }
+    // Funciona em qualquer modo desde que haja rede (é ASR, não o Gemma). No modo
+    // on-device offline não há servidor: a transcrição fica com a Web Speech API.
     const wav = await toWavMono(audioBlob, C.AUDIO_SR);
     const audio_base64 = await blobToBase64(wav);
     const r = await fetch("/api/transcrever", {
@@ -112,20 +153,21 @@
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.erro || ("Falha na transcrição (" + r.status + ")"));
-    return data.transcript || "";
+    return data;  // { transcript, engine, ms }
   }
 
   // ---------------- Passagem 2: NARRATIVA ----------------
-  async function narrate(ficha, coop) {
+  async function narrate(ficha, coop) {   // -> { narrativa, ms }
     if (mode === "server") {
       const r = await fetch("/api/narrar", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ficha_confirmada: ficha, cooperativa: coop }),
       });
       if (!r.ok) throw new Error("Falha no servidor (" + r.status + ")");
-      return (await r.json()).narrativa;
+      const data = await r.json();
+      return { narrativa: data.narrativa, ms: data.ms || 0 };
     }
-    if (mode === "webgpu") return await llm.generateResponse(narrPrompt(ficha, coop));
+    if (mode === "webgpu") return { narrativa: await llm.generateResponse(narrPrompt(ficha, coop)), ms: 0 };
     throw new Error("Gemma indisponível. Inicie o servidor (python3 server/app.py na raiz do projeto) e recarregue a página.");
   }
 
@@ -142,8 +184,8 @@
     });
     if (!r.ok) throw new Error("Falha no servidor (" + r.status + ")");
     const data = await r.json();
-    // /api/extrair agora devolve { ficha, relato }.
-    return { ficha: data.ficha || data, relato: data.relato || "" };
+    // /api/extrair devolve { ficha, relato, ms }.
+    return { ficha: data.ficha || data, relato: data.relato || "", ms: data.ms || 0 };
   }
 
   async function blobUrlToBase64(url) {
@@ -200,5 +242,10 @@
     return new Blob([b], { type: "audio/wav" });
   }
 
-  window.GemmaWeb = { init, extract, narrate, transcribeViaServer, get mode() { return mode; } };
+  window.GemmaWeb = {
+    init, extract, narrate, transcribeViaServer,
+    get mode() { return mode; },
+    get local() { return mode === "webgpu" || servidorEhLocal(); },  // inferência local (edge)?
+    get engineLabel() { return engineLabel(); },
+  };
 })();

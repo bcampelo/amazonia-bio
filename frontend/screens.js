@@ -12,9 +12,19 @@
     return isNaN(d) ? iso : d.toLocaleDateString("pt-BR",
       { day: "2-digit", month: "2-digit", year: "numeric" });
   };
-  const jget = async (url) => { const r = await fetch(url); if (!r.ok) throw new Error(url + " " + r.status); return r.json(); };
-  const erroHTML = (e) => `<p class="vazio">Não foi possível carregar. ${esc(e.message)}<br>
-    <small>O servidor está no ar? (python3 server/app.py)</small></p>`;
+  const jget = async (url, opts) => {
+    const r = await fetch(url, opts);
+    let data = null;
+    try { data = await r.json(); } catch { /* corpo vazio/inválido */ }
+    if (!r.ok) throw new Error((data && data.erro) || (url + " " + r.status));
+    return data;
+  };
+  const erroHTML = (e) => `<p class="vazio"><span class="emoji">📡</span>Não foi possível carregar.<br>
+    <small>${esc(e.message)} — o servidor está no ar?</small></p>`;
+  const vazioHTML = (emoji, txt) => `<p class="vazio"><span class="emoji">${emoji}</span>${esc(txt)}</p>`;
+  // Skeletons (shimmer) enquanto os dados carregam.
+  const skRows = (n = 3) => Array.from({ length: n }).map(() => '<div class="sk sk-row"></div>').join("");
+  const skStats = '<div class="stat-grid">' + Array.from({ length: 4 }).map(() => '<div class="sk sk-stat"></div>').join("") + '</div>';
 
   // ---- Cooperativa configurável (compartilhada com app.js via window) ----
   const COOP_KEY = "bioamazon.coop";
@@ -37,30 +47,85 @@
   }
   const listaLotesHTML = (lotes) => lotes.length
     ? `<div class="lista">${lotes.map(loteItemHTML).join("")}</div>`
-    : `<p class="vazio">Nenhum lote registrado ainda.</p>`;
-  const subtitulo = (t) => `<h2 style="font-size:13px;color:var(--verde-600);text-transform:uppercase;
+    : vazioHTML("🌱", "Nenhum lote registrado ainda. Toque em Registrar para começar.");
+  const subtitulo = (t) => `<h2 style="font-size:13px;color:var(--verde-txt);text-transform:uppercase;
     letter-spacing:.06em;margin:18px 2px 10px">${esc(t)}</h2>`;
 
-  // ---- PAINEL ----
+  // Microinteração: números dos cards de estatística "contam" até o valor real
+  // (que já veio da API) em vez de aparecer estático — só apresentação, o dado é real.
+  function animarContadores(container) {
+    container.querySelectorAll(".stat .n").forEach((el) => {
+      const alvo = parseInt(el.textContent, 10);
+      if (!Number.isFinite(alvo)) return;
+      const t0 = performance.now(), dur = 600;
+      const passo = (t) => {
+        const p = Math.min(1, (t - t0) / dur);
+        el.textContent = Math.round(alvo * (1 - Math.pow(1 - p, 3)));  // ease-out cubic
+        if (p < 1) requestAnimationFrame(passo);
+        else el.textContent = alvo;
+      };
+      requestAnimationFrame(passo);
+    });
+  }
+
+  // Mapa simples (SVG, sem tiles externos — offline-first): plota os pontos reais
+  // de GPS capturados nas fotos, normalizados numa caixa. Não é um basemap real,
+  // é uma dispersão geográfica honesta dos lotes já registrados.
+  function mapaSVG(pontos) {
+    if (!pontos.length) return vazioHTML("🗺️", "Nenhuma localização por GPS registrada ainda.");
+    const lats = pontos.map((p) => p.lat), lngs = pontos.map((p) => p.lng);
+    let minLat = Math.min(...lats), maxLat = Math.max(...lats);
+    let minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+    if (maxLat - minLat < 0.01) { minLat -= 0.05; maxLat += 0.05; }
+    if (maxLng - minLng < 0.01) { minLng -= 0.05; maxLng += 0.05; }
+    const W = 300, H = 170, PAD = 20;
+    const px = (lng) => PAD + (lng - minLng) / (maxLng - minLng) * (W - 2 * PAD);
+    const py = (lat) => H - PAD - (lat - minLat) / (maxLat - minLat) * (H - 2 * PAD);
+    const dots = pontos.map((p) =>
+      `<circle cx="${px(p.lng).toFixed(1)}" cy="${py(p.lat).toFixed(1)}" r="5.5" fill="var(--verde-600)" stroke="var(--card)" stroke-width="1.5">
+        <title>${esc(p.produto)} · ${esc(p.slug)}</title></circle>`).join("");
+    return `<div class="card" style="padding:14px">
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;border-radius:10px;background:var(--verde-50)">${dots}</svg>
+      <p class="li-s" style="margin-top:8px;text-align:center">📍 ${pontos.length} localização(ões) registrada(s) por GPS — posições aproximadas</p>
+    </div>`;
+  }
+
+  // ---- PAINEL (Início) ----
+  const ctaRegistrar = `<a class="lista-item" href="#registrar"
+      style="background:linear-gradient(135deg,var(--verde-600),var(--verde-700));border:0;box-shadow:0 6px 18px rgba(21,104,58,.28);margin-bottom:14px">
+      <span class="av" style="background:rgba(255,255,255,.22);color:#fff">📷</span>
+      <span class="li-main"><span class="li-t" style="color:#fff">Registrar novo lote</span>
+        <span class="li-s" style="color:#e6f5ec">Captura + IA local · funciona offline</span></span>
+      <span style="color:#fff;font-size:22px;font-weight:700">›</span></a>`;
+
   async function painel() {
     const el = q("painelConteudo");
+    el.innerHTML = ctaRegistrar + skStats + skRows(3);
     try {
-      const [r, lotes] = await Promise.all([jget("/api/resumo"), jget("/api/lotes")]);
-      el.innerHTML = `
+      const [r, lotes, pontos] = await Promise.all([
+        jget("/api/resumo"), jget("/api/lotes"), jget("/api/mapa_pontos"),
+      ]);
+      el.innerHTML = ctaRegistrar + `
         <div class="stat-grid">
           <div class="stat"><div class="n">${r.total_lotes}</div><div class="l">Lotes registrados</div></div>
           <div class="stat"><div class="n">${r.total_produtores}</div><div class="l">Produtores</div></div>
+          <div class="stat"><div class="n">${r.produtos_distintos.length}</div><div class="l">Produtos cadastrados</div></div>
+          <div class="stat"><div class="n">${r.comunidades_atendidas.length}</div><div class="l">Comunidades atendidas</div></div>
           <div class="stat"><div class="n">${r.lotes_rastreaveis_completos}</div><div class="l">Rastreabilidade completa</div></div>
           <div class="stat"><div class="n">${r.denuncias_abertas}</div><div class="l">Denúncias abertas</div></div>
         </div>
+        ${subtitulo("Mapa dos lotes")}
+        ${mapaSVG(pontos)}
         ${subtitulo("Últimos lotes")}
-        ${listaLotesHTML(lotes.slice(0, 6))}`;
+        ${listaLotesHTML(lotes.slice(0, 5))}`;
+      animarContadores(el);
     } catch (e) { el.innerHTML = erroHTML(e); }
   }
 
   // ---- LOTES (histórico) ----
   async function lotes() {
     const el = q("lotesConteudo");
+    el.innerHTML = skRows(5);
     try { el.innerHTML = listaLotesHTML(await jget("/api/lotes")); }
     catch (e) { el.innerHTML = erroHTML(e); }
   }
@@ -80,7 +145,7 @@
         .some((c) => c.toLowerCase().includes(termo)));
     q("rastrearConteudo").innerHTML = res.length
       ? listaLotesHTML(res)
-      : `<p class="vazio">Nenhum lote encontrado para “${esc(termo)}”.</p>`;
+      : vazioHTML("🔎", "Nenhum lote encontrado para “" + termo + "”.");
   }
 
   // ---- PRODUTORES + PERFIL ----
@@ -88,15 +153,16 @@
     q("perfilProdutor").classList.add("hide");
     q("produtoresConteudo").classList.remove("hide");
     const el = q("produtoresConteudo");
+    el.innerHTML = skRows(4);
     try {
       const lista = await jget("/api/produtores");
       el.innerHTML = lista.length ? `<div class="lista">${lista.map((p) => `
         <li class="clicavel" data-pid="${p.id}">
-          ${p.foto ? `<img class="av" src="${esc(p.foto)}"/>` : `<span class="av">👤</span>`}
+          ${p.foto ? `<img class="av" src="${esc(p.foto)}" alt="Foto de ${esc(p.nome)}"/>` : `<span class="av">👤</span>`}
           <span class="li-main"><span class="li-t">${esc(p.nome)}</span>
             <span class="li-s">${esc(p.comunidade || "—")} · cód. ${esc(p.codigo)}</span></span>
           <span class="li-tag">📦 ${p.total_lotes}</span></li>`).join("")}</div>`
-        : `<p class="vazio">Nenhum produtor cadastrado. Cadastre no fluxo de registro.</p>`;
+        : vazioHTML("👤", "Nenhum produtor cadastrado ainda. Cadastre no fluxo de registro.");
       el.querySelectorAll("li[data-pid]").forEach((li) =>
         li.onclick = () => perfilProdutor(li.dataset.pid));
     } catch (e) { el.innerHTML = erroHTML(e); }
@@ -105,7 +171,8 @@
     const el = q("perfilProdutor");
     q("produtoresConteudo").classList.add("hide");
     el.classList.remove("hide");
-    el.innerHTML = `<p class="vazio">Carregando…</p>`;
+    el.classList.add("fade-in");
+    el.innerHTML = skRows(3);
     try {
       const p = await jget("/api/produtores/" + pid);
       const ind = p.indicadores || {};
@@ -113,7 +180,7 @@
         <a href="#produtores" data-voltar style="font-size:13px;font-weight:600;color:var(--verde-600);text-decoration:none">← voltar</a>
         <div class="card" style="margin-top:10px">
           <div style="display:flex;gap:14px;align-items:center">
-            ${p.foto ? `<img src="${esc(p.foto)}" style="width:60px;height:60px;border-radius:50%;object-fit:cover;border:1px solid var(--linha)"/>` : `<span class="av" style="width:60px;height:60px;font-size:26px">👤</span>`}
+            ${p.foto ? `<img src="${esc(p.foto)}" alt="Foto de ${esc(p.nome)}" style="width:60px;height:60px;border-radius:50%;object-fit:cover;border:1px solid var(--linha)"/>` : `<span class="av" style="width:60px;height:60px;font-size:26px">👤</span>`}
             <div><div style="font-weight:700;font-size:17px">${esc(p.nome)}</div>
               <div class="li-s">${esc(p.comunidade || "—")}${p.comunidade && p.cooperativa ? " · " : ""}${esc(p.cooperativa || "")}</div>
               <div class="li-s">cód. ${esc(p.codigo)} · desde ${fmtData(p.criado_em)}</div></div>
@@ -127,24 +194,16 @@
         <p class="view-sub" style="margin-top:0">Base preparada para reconhecimento de boas práticas
           (regularidade, projetos sustentáveis, selos) — a evoluir.</p>
         ${subtitulo("Histórico de lotes")}
-        ${listaLotesHTML((p.historico || []).map(histToResumo))}`;
+        ${listaLotesHTML(p.historico || [])}`;
       el.querySelector("[data-voltar]").onclick = (e) => { e.preventDefault(); produtores(); };
+      animarContadores(el);
     } catch (e) { el.innerHTML = erroHTML(e); }
-  }
-  // adapta o formato de buscar_lote (histórico) para o de listaLotesHTML
-  function histToResumo(l) {
-    const ev = l.evidencias || {};
-    const ess = ["produtor", "coleta", "produto", "gemma", "confirmacao", "narrativa"];
-    return {
-      produto: l.produto, cooperativa: l.cooperativa, produtor_nome: null,
-      criado_em: l.criado_em, url: "/p/" + l.slug,
-      evidencias_completas: ess.filter((k) => k in ev).length,
-    };
   }
 
   // ---- COOPERATIVA (perfil agregado) ----
   async function cooperativa() {
     const el = q("cooperativaConteudo");
+    el.innerHTML = skStats + skRows(3);
     try {
       const [lotes, prods] = await Promise.all([jget("/api/lotes"), jget("/api/produtores")]);
       const coop = window.getCooperativa();
@@ -164,60 +223,83 @@
         </div>
         ${subtitulo("Lotes da cooperativa")}
         ${listaLotesHTML(daCoop)}`;
+      animarContadores(el);
     } catch (e) { el.innerHTML = erroHTML(e); }
   }
 
   // ---- DENÚNCIAS ----
   async function denuncias() {
     const el = q("denunciasLista");
+    el.innerHTML = skRows(2);
     try {
       const lista = await jget("/api/denuncias");
       el.innerHTML = lista.length ? `<div class="lista">${lista.map((d) => `
-        <li><span class="av">⚠️</span>
+        <li><span class="av" style="background:var(--laranja-bg);color:var(--laranja)">⚠️</span>
           <span class="li-main"><span class="li-t">${esc(d.mensagem)}</span>
             <span class="li-s">${d.slug ? "lote " + esc(d.slug) + " · " : ""}${fmtData(d.criado_em)} · ${esc(d.status)}</span></span>
         </li>`).join("")}</div>`
-        : `<p class="vazio">Nenhuma denúncia registrada.</p>`;
+        : vazioHTML("✅", "Nenhuma denúncia registrada.");
     } catch (e) { el.innerHTML = erroHTML(e); }
   }
   q("denEnviar").onclick = async () => {
     const mensagem = q("denMsg").value.trim();
-    if (!mensagem) return alert("Descreva a irregularidade.");
+    if (!mensagem) return Toast.aviso("Descreva a irregularidade.");
+    const btn = q("denEnviar");
+    btn.disabled = true; btn.textContent = "Enviando…";
     try {
-      const r = await fetch("/api/denuncias", {
+      await jget("/api/denuncias", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mensagem, slug: q("denSlug").value.trim(), contato: q("denContato").value.trim() }),
       });
-      if (!r.ok) throw new Error("falha " + r.status);
       q("denMsg").value = ""; q("denSlug").value = ""; q("denContato").value = "";
-      const ok = q("denMsgOk"); ok.textContent = "Denúncia registrada. Obrigado por ajudar a manter a transparência."; ok.classList.remove("hide");
+      const ok = q("denMsgOk");
+      ok.textContent = "Denúncia registrada. Obrigado por ajudar a manter a transparência.";
+      ok.classList.remove("hide");
+      Toast.sucesso("Denúncia enviada.");
       denuncias();
-    } catch (e) { alert("Não foi possível enviar: " + e.message); }
+    } catch (e) { Toast.erro("Não foi possível enviar: " + e.message); }
+    finally { btn.disabled = false; btn.textContent = "Enviar denúncia"; }
   };
 
   // ---- CONFIG ----
+  const IA_KEY = "bioamazon.ia_mode";
   function config() {
     q("cfgCoop").value = window.getCooperativa();
+    q("cfgIaModo").value = localStorage.getItem(IA_KEY) || "auto";
+    q("cfgIaStatus").textContent = "Motor de IA agora: " +
+      (window.GemmaWeb ? GemmaWeb.engineLabel : "—");
     q("cfgMsgOk").classList.add("hide");
   }
+  q("btnDemo").onclick = () => window.DemoMode?.iniciar();
   q("cfgSalvar").onclick = () => {
     const v = q("cfgCoop").value.trim();
-    if (!v) return alert("Informe o nome da cooperativa.");
+    if (!v) return Toast.aviso("Informe o nome da cooperativa.");
     setCooperativa(v);
-    const ok = q("cfgMsgOk"); ok.textContent = "Configuração salva neste dispositivo."; ok.classList.remove("hide");
+    const antes = localStorage.getItem(IA_KEY) || "auto";
+    const modo = q("cfgIaModo").value;
+    localStorage.setItem(IA_KEY, modo);
+    const ok = q("cfgMsgOk");
+    ok.textContent = modo !== antes
+      ? "Salvo. Recarregue a página para aplicar o novo modo de IA."
+      : "Configuração salva neste dispositivo.";
+    ok.classList.remove("hide");
+    Toast.sucesso("Configuração salva.");
   };
 
   // ---- Router ----
   const ROTAS = {
     registrar: null, painel, lotes, rastrear, produtores, cooperativa, denuncias, config,
   };
+  // rotas que não têm item próprio na bottom nav destacam o item "pai" mais próximo
+  const NAV_PAI = { lotes: "rastrear", cooperativa: "produtores", config: "painel" };
   function navegar() {
-    const hash = (location.hash.replace("#", "") || "registrar");
-    const rota = ROTAS.hasOwnProperty(hash) ? hash : "registrar";
+    const hash = (location.hash.replace("#", "") || "painel");
+    const rota = ROTAS.hasOwnProperty(hash) ? hash : "painel";
     document.querySelectorAll(".view").forEach((v) =>
       v.classList.toggle("hide", v.id !== "view-" + rota));
-    document.querySelectorAll("nav.tabs a").forEach((a) =>
-      a.classList.toggle("ativo", a.getAttribute("href") === "#" + rota));
+    const destaque = NAV_PAI[rota] || rota;
+    document.querySelectorAll(".bottom-nav a").forEach((a) =>
+      a.classList.toggle("ativo", a.getAttribute("href") === "#" + destaque));
     window.scrollTo(0, 0);
     if (ROTAS[rota]) ROTAS[rota]();  // carrega os dados da tela
   }

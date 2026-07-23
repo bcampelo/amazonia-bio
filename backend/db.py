@@ -15,6 +15,7 @@ import json
 import os
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from typing import Optional
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bioamazon.db")
@@ -62,10 +63,22 @@ CREATE TABLE IF NOT EXISTS denuncias (
 """
 
 
-def _connect() -> sqlite3.Connection:
+@contextmanager
+def _connect():
+    """`sqlite3.Connection` usado como context manager só faz commit/rollback —
+    NUNCA fecha a conexão (pegadinha conhecida do stdlib). Sem isso, cada chamada
+    (11 call sites neste arquivo) vazava uma conexão até o GC eventualmente
+    coletar. Este wrapper garante commit/rollback E close."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _add_column_if_missing(conn, table, coluna, ddl) -> None:
@@ -163,9 +176,21 @@ def criar_produtor(nome: str, comunidade: str = "", cooperativa: str = "",
 
 
 def listar_produtores() -> list[dict]:
+    """Lista + contagem de lotes por produtor em SÓ 2 queries (não N+1): antes
+    rodava um SELECT COUNT(*) por produtor num loop — para poucos produtores
+    era imperceptível, mas escala mal e é o padrão errado a copiar depois."""
     with _connect() as conn:
         rows = conn.execute("SELECT * FROM produtores ORDER BY nome COLLATE NOCASE").fetchall()
-    return [_resumo_produtor(_produtor_row_to_dict(r)) for r in rows]
+        contagens = dict(conn.execute(
+            "SELECT produtor_id, COUNT(*) FROM lotes "
+            "WHERE produtor_id IS NOT NULL GROUP BY produtor_id"
+        ).fetchall())
+    out = []
+    for r in rows:
+        prod = _produtor_row_to_dict(r)
+        prod["total_lotes"] = contagens.get(prod["id"], 0)
+        out.append(prod)
+    return out
 
 
 def buscar_produtor(produtor_id: int) -> Optional[dict]:
@@ -176,16 +201,6 @@ def buscar_produtor(produtor_id: int) -> Optional[dict]:
     prod = _produtor_row_to_dict(row)
     prod["historico"] = listar_lotes(produtor_id=produtor_id)
     prod["indicadores"] = calcular_indicadores(prod)
-    return prod
-
-
-def _resumo_produtor(prod: dict) -> dict:
-    """Versão leve para listagem (sem o histórico completo), com contagem de lotes."""
-    with _connect() as conn:
-        n = conn.execute("SELECT COUNT(*) c FROM lotes WHERE produtor_id = ?",
-                         (prod["id"],)).fetchone()["c"]
-    prod = dict(prod)
-    prod["total_lotes"] = n
     return prod
 
 

@@ -51,21 +51,3 @@ def ficha_response_schema() -> dict:
         "required": list(FICHA_FIELDS),
         "propertyOrdering": list(FICHA_FIELDS),
     }
-
-
-def validate(ficha: dict) -> tuple[bool, list[str]]:
-    errors: list[str] = []
-    for f in FICHA_FIELDS:
-        if f not in ficha:
-            errors.append(f"campo ausente: {f}")
-            continue
-        cell = ficha[f]
-        if not isinstance(cell, dict) or "value" not in cell or "provenance" not in cell:
-            errors.append(f"campo malformado (esperado {{value, provenance}}): {f}")
-            continue
-        if cell["provenance"] not in PROVENANCES:
-            errors.append(f"proveniência inválida em {f}: {cell['provenance']!r}")
-    extra = [k for k in ficha if k not in FICHA_FIELDS]
-    if extra:
-        errors.append(f"campos inesperados (ignoráveis): {extra}")
-    return (len([e for e in errors if 'inesperados' not in e]) == 0, errors)

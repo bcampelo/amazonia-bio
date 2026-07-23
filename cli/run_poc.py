@@ -19,7 +19,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from backend.pipeline import extract, confirm, narrate  # noqa: E402
+from backend.pipeline import run  # noqa: E402
 
 
 def main():
@@ -37,19 +37,20 @@ def main():
     transcript = args.text or open(args.text_file, encoding="utf-8").read().strip()
 
     print(f"\n=== BACKEND: {args.backend} ===")
-    print("\n[1/3] PASSAGEM 1 — EXTRAÇÃO (áudio+imagem -> ficha JSON)")
-    ficha = extract(transcript, image=args.image, backend=args.backend)
-    print(json.dumps(ficha, ensure_ascii=False, indent=2))
+    print("\n[1/4] GEMMA reorganiza o relato cru (sem inventar nada)")
+    resultado = run(transcript, args.cooperativa, image=args.image, backend=args.backend)
+    print(resultado["relato"] or "(relato vazio — transcrição sem conteúdo aproveitável)")
 
-    print("\n[2/3] CONFIRMAÇÃO DO OPERADOR (loop de confiança)")
-    confirmada = confirm(ficha)  # auto-confirma tudo nesta PoC
-    print("  -> todos os campos marcados como 'confirmado'.")
+    print("\n[2/4] PASSAGEM 1 — EXTRAÇÃO (relato+imagem -> ficha JSON)")
+    print(json.dumps(resultado["ficha_extraida"], ensure_ascii=False, indent=2))
 
-    print("\n[3/3] PASSAGEM 2 — NARRATIVA (só fatos confirmados)")
-    narrativa = narrate(confirmada, args.cooperativa, backend=args.backend)
-    print(narrativa)
+    print("\n[3/4] CONFIRMAÇÃO DO OPERADOR (loop de confiança)")
+    print("  -> todos os campos marcados como 'confirmado' (auto-confirmado nesta PoC).")
 
-    registro = {"ficha_confirmada": confirmada, "narrativa": narrativa,
+    print("\n[4/4] PASSAGEM 2 — NARRATIVA (só fatos confirmados)")
+    print(resultado["narrativa"])
+
+    registro = {"ficha_confirmada": resultado["ficha_confirmada"], "narrativa": resultado["narrativa"],
                 "cooperativa": args.cooperativa, "status": "rascunho_local"}
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:

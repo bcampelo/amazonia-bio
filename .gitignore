@@ -5,3 +5,12 @@ __pycache__/
 .DS_Store
 frontend/models/*.litertlm
 bioamazon.db
+
+# Fase 5 (Edge AI): runtime vendorizado e modelos on-device (grandes)
+frontend/vendor/
+frontend/models/*.litertlm
+frontend/models/*.task
+frontend/models/*.bin
+
+# ASR offline (whisper.cpp) — modelos ggml grandes
+backend/asr/models/*.bin

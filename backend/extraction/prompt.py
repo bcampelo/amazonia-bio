@@ -85,19 +85,62 @@ def build_relato_prompt(transcript: str) -> str:
     )
 
 
+# Definição de CADA campo — essencial para modelos menores (Gemma local) não
+# confundirem, p.ex., variedade com produto, ou método com práticas sustentáveis.
+_CAMPO_DEFS = (
+    "SIGNIFICADO DE CADA CAMPO (preencha TODOS que aparecerem no relato/foto):\n"
+    "- produto: o produto principal (ex.: açaí, castanha-do-brasil, cupuaçu, pupunha).\n"
+    "- variedade: o tipo/variedade específico, se dito (ex.: \"solteiro\", \"BRS\", nome "
+    "científico). \"açaí solteiro\" -> variedade = \"solteiro\".\n"
+    "- origem: lugar/comunidade/rio/cidade de coleta — SÓ se dito ou legível na foto.\n"
+    "- metodo_coleta_manejo: COMO foi coletado (ex.: escalada da palmeira, coleta manual, "
+    "uso de paneiro, extrativismo).\n"
+    "- epoca_safra: quando foi colhido (mês ou época).\n"
+    "- caracteristicas_sensoriais: cor, textura, tamanho, sabor, aroma, aspecto.\n"
+    "- praticas_sustentaveis: práticas de sustentabilidade ditas (ex.: \"sem veneno/"
+    "agrotóxico\", \"floresta em pé\", \"sem desmatamento\", \"manejo sustentável\").\n"
+    "- volume: a quantidade em NÚMERO (ex.: 20).\n"
+    "- unidade: a unidade da quantidade (ex.: kg, quilos, latas, paneiros)."
+)
+
+# Few-shot COMPLETO (relato -> ficha) com um produto DIFERENTE do açaí, para ensinar
+# o mapeamento sem vazar respostas dos testes. Ensina o modelo menor a não deixar
+# campos vazios quando a informação existe.
+_EXTRACAO_EXEMPLO = (
+    "EXEMPLO (sem foto).\n"
+    "Relato: <<<essa castanha-do-brasil eu tirei na floresta em pé lá no seringal do Cazumbá, "
+    "foi em janeiro, colhi umas cinco latas, a amêndoa é bem grande e clara, tudo sem veneno>>>\n"
+    "JSON:\n"
+    "{\"produto\": {\"value\": \"castanha-do-brasil\", \"provenance\": \"audio\"}, "
+    "\"variedade\": {\"value\": \"não informado\", \"provenance\": \"inferido\"}, "
+    "\"origem\": {\"value\": \"Seringal do Cazumbá\", \"provenance\": \"audio\"}, "
+    "\"metodo_coleta_manejo\": {\"value\": \"coleta extrativista na floresta em pé\", \"provenance\": \"audio\"}, "
+    "\"epoca_safra\": {\"value\": \"janeiro\", \"provenance\": \"audio\"}, "
+    "\"caracteristicas_sensoriais\": {\"value\": \"amêndoa grande e clara\", \"provenance\": \"audio\"}, "
+    "\"praticas_sustentaveis\": {\"value\": \"floresta em pé, sem veneno\", \"provenance\": \"audio\"}, "
+    "\"volume\": {\"value\": \"5\", \"provenance\": \"audio\"}, "
+    "\"unidade\": {\"value\": \"latas\", \"provenance\": \"audio\"}}"
+)
+
+
 def build_extraction_prompt(transcript: str, has_image: bool) -> str:
     img_line = ("Há uma FOTO do produto anexada a este prompt. Observe-a com atenção e "
                 "preencha com confiança os campos visíveis (produto, cor/aspecto em "
-                "caracteristicas_sensoriais)." if has_image
-                else "Não há foto anexada; marque campos puramente visuais como "
-                "\"não informado\", a menos que ditos na fala.")
+                "caracteristicas_sensoriais com provenance \"imagem\")." if has_image
+                else "NÃO há foto anexada; então NUNCA use provenance \"imagem\". Campos "
+                "puramente visuais só se ditos na fala (provenance \"audio\").")
     fala = transcript.strip() or "(o produtor não falou nada / transcrição vazia)"
     return (
         f"{EXTRACTION_SYSTEM}\n\n"
+        f"{_CAMPO_DEFS}\n\n"
+        f"{_EXTRACAO_EXEMPLO}\n\n"
         f"{img_line}\n\n"
-        "RELATO DO PRODUTOR (organizado a partir da fala):\n"
+        "AGORA EXTRAIA A FICHA DESTE RELATO. Preencha CADA campo que tiver informação "
+        "no relato (não deixe \"não informado\" se o dado estiver lá); use "
+        "\"não informado\" apenas quando o dado realmente não existir.\n"
+        "RELATO DO PRODUTOR:\n"
         f"<<<{fala}>>>\n\n"
-        "Devolva um JSON com EXATAMENTE estes campos, cada um no formato "
+        "Devolva o JSON com EXATAMENTE estes campos, cada um "
         '{\"value\": \"...\", \"provenance\": \"audio|imagem|inferido\"}:\n'
         f"{_CAMPOS}\n"
     )

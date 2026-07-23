@@ -17,10 +17,12 @@ no app; ver android/README_LITERT.md. Aqui deixamos o contrato definido.
 from __future__ import annotations
 import os
 import re
+import sys
 import json
 import base64
 import mimetypes
 import urllib.request
+import urllib.error
 from typing import Optional, List
 
 
@@ -43,7 +45,10 @@ _load_dotenv()
 
 DEFAULT_BACKEND = os.environ.get("GEMMA_BACKEND", "mock")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-GEMMA_MODEL = os.environ.get("GEMMA_MODEL", "gemma3n:e2b")
+# Modelo do backend Ollama (inferência LOCAL). Default: gemma3:4b — no Ollama é ele
+# que faz TEXTO + IMAGEM (o build gemma3n:e2b do Ollama não expõe visão). No alvo
+# Android/LiteRT-LM o Gemma 3n E2B faz texto+imagem+áudio. Override via GEMMA_MODEL.
+GEMMA_MODEL = os.environ.get("GEMMA_MODEL", "gemma3:4b")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemma-4-26b-a4b-it")
 
@@ -62,13 +67,24 @@ def gemma_generate(
     """Recebe um prompt (texto) + mídia opcional, devolve texto do Gemma.
 
     response_schema: dict (JSON-Schema simplificado) para forçar SAÍDA ESTRUTURADA
-    nos backends que suportam (só o gemini hoje). Reduz drasticamente JSON truncado/
+    nos backends que suportam (gemini E ollama). Reduz drasticamente JSON truncado/
     sujo. Ignorado pelos backends que não suportam."""
     backend = backend or DEFAULT_BACKEND
     if backend == "gemini":
         return _gemini(prompt, images, temperature, max_tokens, json_mode, response_schema)
     if backend == "ollama":
-        return _ollama(prompt, images, audio, temperature, max_tokens, json_mode)
+        # LOCAL-FIRST com FALLBACK DE NUVEM: tenta o Gemma local (Ollama). Se ele
+        # estiver fora do ar ou rejeitar a requisição (ex.: modelo sem visão) e
+        # houver chave da nuvem, cai para o gemini — exatamente a filosofia "local
+        # primeiro; só então remoto". Sem chave, propaga o erro (offline puro).
+        try:
+            return _ollama(prompt, images, audio, temperature, max_tokens, json_mode, response_schema)
+        except urllib.error.URLError as e:
+            if not GEMINI_API_KEY:
+                raise
+            print(f"[gemma] Ollama local indisponível ({e}); usando fallback de nuvem (gemini).",
+                  file=sys.stderr)
+            return _gemini(prompt, images, temperature, max_tokens, json_mode, response_schema)
     if backend == "mock":
         return _mock(prompt, json_mode)
     raise ValueError(f"Backend desconhecido: {backend!r} (use 'mock', 'gemini' ou 'ollama')")
@@ -118,14 +134,19 @@ def _gemini(prompt, images, temperature, max_tokens, json_mode, response_schema=
 # --------------------------------------------------------------------------- #
 # Backend REAL: Ollama local (Gemma no dispositivo / máquina do operador)
 # --------------------------------------------------------------------------- #
-def _ollama(prompt, images, audio, temperature, max_tokens, json_mode) -> str:
+def _ollama(prompt, images, audio, temperature, max_tokens, json_mode,
+            response_schema=None) -> str:
     payload = {
         "model": GEMMA_MODEL,
         "prompt": prompt,
         "stream": False,
         "options": {"temperature": temperature, "num_predict": max_tokens},
     }
-    if json_mode:
+    # Structured outputs do Ollama: `format` aceita um JSON Schema (dict). Usamos o
+    # MESMO schema da ficha do gemini — garante os 9 campos sem JSON sujo/truncado.
+    if response_schema:
+        payload["format"] = response_schema
+    elif json_mode:
         payload["format"] = "json"
     if images:
         payload["images"] = [_b64(p) for p in images]

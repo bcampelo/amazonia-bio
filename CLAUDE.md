@@ -58,14 +58,21 @@ the Python prompts/schema unchanged.
 
 Do not introduce Whisper, Llama, or any other model as the reasoning "brain" — extraction
 and narrative generation must always go through Gemma. The one narrow exception is speech
-transcription (ASR), which is not reasoning, just turning sound into text. There are now
-**two** ASR paths, both outside `gemma_generate` on purpose: (1) the browser Web Speech API
-(primary, on-device, in `frontend/app.js`); (2) a **server-side fallback**,
-`backend/asr/transcribe.py::transcribe_audio()`, used when the browser has no/failed ASR
-(Safari, Brave, Firefox, no Google backend). The server fallback calls a plain Gemini
-multimodal model (`GEMINI_ASR_MODEL`, default `gemini-flash-latest`) **only to transcribe** —
-Gemma still does 100% of extraction/narrative. It lives in its own `backend/asr/` package,
-NOT as a `gemma_generate` backend, precisely so nobody confuses ASR with the Gemma brain.
+transcription (ASR), which is not reasoning, just turning sound into text. ASR is now
+**offline-first**, in its own `backend/asr/` package (NOT a `gemma_generate` backend, so
+nobody confuses ASR with the Gemma brain). `transcribe.py::transcribe()` returns
+`{transcript, engine, ms}` and picks, in order: (1) **whisper.cpp LOCAL** (`whisper-cli` +
+`backend/asr/models/ggml-small.bin`, runs offline on Metal/CPU — this is what removed the last
+internet dependency; ~1 s for a ~10 s pt-BR clip); (2) **Gemini cloud fallback**
+(`GEMINI_ASR_MODEL`, `gemini-flash-latest`) only if whisper.cpp isn't installed. In the
+browser, `app.js::onRecordingStopped()` now treats the **local server whisper as authoritative**
+(Web Speech is only an online live-preview), so the recorded audio → WAV (`toWavMono`) →
+`/api/transcrever` → whisper is the offline path. The three routes (`/api/transcrever`,
+`/api/extrair`, `/api/narrar`) each return `ms`, and the UI shows a per-step + total timing
+line (`#tempos`). **On Android/LiteRT-LM there is no separate ASR at all** — Gemma 3n
+transcribes natively (Audio Scribe); whisper.cpp is the laptop/PWA equivalent. Setup:
+`brew install whisper-cpp` + download a ggml model (see `.env.example` `WHISPER_*`).
+Measured full offline pipeline (audio→ASR→relato→ficha→narrative): ~18–23 s total, all local.
 
 ### The `gemini` backend — real Gemma, no local weights
 
@@ -173,11 +180,15 @@ and `app.js`'s `cooperativaNome()` calls `window.getCooperativa` (defined in `sc
 keep this ordering and don't wrap either file in a module/IIFE that would break the sharing
 (`evidence.js`/`screens.js` are IIFEs but expose exactly what's needed on `window`).
 
-`gemma-web.js`'s `init()` picks a mode in this priority order: **`server`** (calls
-`/api/health`; if reachable, real Gemma via `server/app.py` — the expected path whenever the
-Flask server is running) → **`webgpu`** (on-device MediaPipe `tasks-genai`, needs a
-`.litertlm` file in `frontend/models/` that isn't present in this repo — effectively dormant
-until someone supplies one) → **`"indisponivel"`**. **There is no mock fallback anymore —
+`gemma-web.js`'s `init()` is **LOCAL-FIRST** (Edge AI is the architectural goal, remote is the
+fallback — see the Edge AI section below): it tries **`webgpu`** (Gemma on-device) FIRST, then
+**`server`** (real Gemma via `server/app.py`, remote), then **`"indisponivel"`**. On-device is
+attempted only when (a) the browser has WebGPU and (b) a model is actually installed (asked via
+`GET /api/modelo_local`, cached in localStorage so it also works offline) — otherwise it cleanly
+falls through to the cloud. The Config screen's "Modo de IA" (`localStorage bioamazon.ia_mode`:
+`auto`|`local`|`nuvem`) can force local-only or cloud-only. The active engine is surfaced in the
+header pill (`📴 no dispositivo` green / `☁️ nuvem — fallback` / `indisponível`) and via
+`GemmaWeb.local`/`GemmaWeb.engineLabel`. **There is no mock fallback anymore —
 it was deleted on purpose.** It used to exist as a last-resort so the UI never hard-failed,
 but its `mockFicha()` hardcoded `produto: "Açaí"` unconditionally regardless of what image
 was sent, which silently produced fake-but-plausible results indistinguishable from real
@@ -263,13 +274,63 @@ boas_praticas, projetos_sustentaveis, selos) that future rules can fill *without
 changes* — they're read from `indicadores_json`. Do NOT add scoring rules yet; the ask was
 to prepare the structure, and the whole point is that the architecture already supports it.
 
+### Edge AI / offline-first architecture (Phase 5)
+
+The strategic goal: run on-device, sync only when online. Concretely:
+
+**Local-first inference.** `gemma-web.js::init()` prefers on-device (WebGPU) over the remote
+server (see the load-order note above). The MediaPipe/LiteRT **runtime is vendored** at
+`frontend/vendor/tasks-genai/` (ESM + wasm, ~52 MB) so the on-device path needs **no CDN and no
+internet** — `config.js` points `TASKS_GENAI_ESM`/`WASM_BASE` at the local vendor (CDN URLs kept
+only as a `_CDN` fallback). The vendor dir + model files are git-ignored (large). What's NOT
+committed is the **model weights**: the Web Gemma model is large (Gemma 3n E2B ~2.6 GB) and
+license-gated, so it's dropped into `frontend/models/` via `scripts/baixar_modelo.sh` (documented
+in `frontend/models/README.txt`). The moment a model file is present, `/api/modelo_local` reports
+it and the app switches to on-device automatically — **the on-device path is fully wired; only the
+weights are supplied out-of-band.** (This session did not download the multi-GB weights, so
+on-device *inference* wasn't exercised end-to-end here; the abstraction, fallback, vendored
+runtime, and model-presence detection were all verified.)
+
+**Local inference is LIVE via Ollama (Phase 6).** The `.env` now defaults to
+`GEMMA_BACKEND=ollama` — real Gemma running on the operator's machine (Metal/GPU), **no cloud,
+no API key needed**. Verified end-to-end (browser → local Flask → local Ollama): relato +
+extraction + narrative all run locally, ~6–13 s/step (faster than the cloud's 30–90 s). Setup:
+`brew install ollama` → `ollama serve` → `ollama pull gemma3:4b`. `_ollama()` now passes the
+same `response_schema` (Ollama structured outputs) so the ficha stays clean.
+**Model-per-backend nuance (verified, not assumed):** on **Ollama**, `gemma3:4b` does text+image
+but `gemma3n:e2b` is **text-only** (Ollama's build doesn't expose its vision) — so the Ollama
+default is `gemma3:4b`. On **Android/LiteRT-LM**, Gemma 3n E2B is the one that does text+image+
+audio. `gemma3:1b` is text-only and small but visibly weaker at anti-hallucination (invented a
+name in testing) — don't use it where fidelity matters. **Server-side fallback:** with
+`GEMMA_BACKEND=ollama`, if Ollama is down/refuses a request and a `GEMINI_API_KEY` exists,
+`gemma_generate()` auto-falls-back to the cloud (`_gemini`) — the server-level mirror of the
+browser's local-first. In the header, `backend=ollama` is shown as **local** (`📴 no
+dispositivo (ollama, local)`), only `gemini` is cloud (`GemmaWeb.local`/`servidorEhLocal()`).
+
+**Honest platform limits** (researched against official Google AI Edge docs — see
+`docs/EDGE_RESEARCH.md`): the browser WebGPU path does **text + image on-device, but NOT audio**
+(`config.js` `SUPPORT_AUDIO=false`) — audio-native on-device Gemma exists only on the
+**Android/LiteRT-LM** path (no Android code yet). So on-device, speech still goes through ASR
+(Web Speech / server fallback) and only the text reaches the on-device Gemma. Multimodal (image)
+requires the big Gemma 3n E2B/E4B; small models (Gemma 3 1B/270M) are text-only. Min realistic
+device: a mid-range 2023+ Android with WebGPU/GPU and ~3 GB free — hence the cloud fallback stays.
+
+**Offline-first data path** (all verified in real Chrome, offline simulated): capture (camera +
+GPS + timestamp + audio), producer registration, ficha entry, and the evidence chain all work
+with **zero network**, stored in **IndexedDB**. Publishing (slug/page/QR) needs the network and
+sits in a queue; `sincronizar()` is gated on `navigator.onLine`, and an `online` event listener
+**auto-syncs the pending queue on reconnect** (silent — no alerts). The Config screen lists
+exactly what works offline. Don't move capture/store behind a network call.
+
 ### Screens & navigation (`frontend/screens.js`) — the SPA layer (Phase 4)
 
-A **hash-based router** (no build step, no framework) turns the app into 8 views. Each nav
-link `#<rota>` maps to a `<section id="view-<rota>">` and a `ROTAS[rota]` loader in
-`screens.js`; `navegar()` (on `hashchange` + first load) toggles `.view.hide`, sets the active
-nav pill, and calls the loader. To add a screen: add the nav `<a>`, the `<section>`, and a
-`ROTAS` entry — nothing else.
+A **hash-based router** (no build step, no framework) turns the app into 8 views. Each route
+`#<rota>` maps to a `<section id="view-<rota>">` and a `ROTAS[rota]` loader in `screens.js`;
+`navegar()` (on `hashchange` + first load, **default `#painel`**) toggles `.view.hide`, sets
+the active item in the **fixed bottom navigation** (`.bottom-nav`, 5 tabs: Início/Rastrear/
+Registrar[center FAB]/Denúncias/Perfil), and calls the loader. Routes without their own tab
+(`lotes`→Rastrear, `cooperativa`→Perfil, `config`→gear in the top bar) highlight a parent via
+`NAV_PAI`. To add a screen: add the `<section>`, a `ROTAS` entry, and (optionally) a nav item.
 
 Every consultation screen reads the **real API** (no mocks): `painel` (`/api/resumo` +
 `/api/lotes`), `lotes` (`/api/lotes`), `rastrear` (client-side filter over `/api/lotes`),
@@ -281,6 +342,19 @@ its `ROTAS` entry is `null` (nothing to load).
 The **cooperativa is now configurable**, not hardcoded: `screens.js` owns
 `window.getCooperativa()`/`setCooperativa()` (localStorage `bioamazon.coop`), the Config
 screen edits it, and it threads into capture/publish via `app.js`'s `cooperativaNome()`.
+
+**Design system (Phase 8 redesign).** Mobile-first, premium green identity. The whole look is
+driven by tokens in `index.html`'s `<style>` — the `--verde-*` var **names are kept** (many
+inline styles and `screens.js` reference them) with refreshed values; don't rename them, tune
+values. Shared components: `.card`, `button`(+`.sec`,`.rec`), inputs/`select`/`textarea`,
+`.chip` (status badges), `.stat`, `.lista`/`.lista-item`, `.cadeia`, `.tiles`/`.tile`, `.sk`
+(skeleton shimmer), `.vazio`(+`.emoji`) empty states. A **real status bar** under the top bar
+shows live badges driven by actual state (not mocked): `#bIa`/`#bGemma` (from `GemmaWeb`),
+`#bAsr` (from `GET /api/asr_info` — whisper.cpp present?), `#bGps` (turns green on a real GPS
+fix), `#net`. `#globalProgress` is an indeterminate bar shown by `app.js`'s `showProg()`/
+`hideProg()` around every AI call (transcription/extract/narrate). Respect
+`prefers-reduced-motion` (already handled). Keep every component functional — no decorative
+mock UI.
 
 New backend routes for these screens live in `server/app.py`: `GET /api/lotes` (list enriched
 with `produtor_nome` + `evidencias_completas`), `GET /api/resumo` (dashboard counters),
@@ -295,6 +369,85 @@ already made (don't relitigate without reason): target **LiteRT-LM** for the rea
 mid-range devices; emulators are not reliable for this — testing needs a physical device;
 audio clips are batch-only, ≤30s, no streaming. This remains the only path with true
 audio-native, fully on-device Gemma inference.
+
+### Polish pass (Phase 9) — audit fixes, dark mode, demo mode
+
+A full audit + UX/perf/accessibility pass added several new frontend files and fixed real bugs
+found by testing (not just cosmetic). Load order is now `toast.js → config.js → evidence.js →
+gemma-web.js → app.js → screens.js → demo.js` (`sw.js` `SHELL` must list all of them).
+
+**`frontend/toast.js`** — two independent IIFEs in one file: (1) `window.Toast` (`.sucesso/.erro/
+.info/.aviso`), a non-blocking notification replacing every `alert()` in the app (blocking alerts
+read as "prototype", not "product"); (2) a delegated ripple effect on `button, a.lista-item,
+li.clicavel, .tile`. Loads first so `Toast` exists before any other script needs it.
+
+**Real bugs fixed in this pass** (don't reintroduce): `putLote()` used to return the raw
+`IDBRequest` instead of a Promise, so every `await putLote(...)` resolved instantly without
+waiting for the write or surfacing failures. The record button had a race: clicking "Parar" then
+immediately "Gravar" again could clobber `audioBlob`/`pipeTimes` while the previous transcription
+was still in flight — now `#rec` disables itself between stop and the transcription settling.
+`onRecordingStopped` now actually calls `mediaStream.getTracks().forEach(t=>t.stop())` — before,
+the mic stream was never released (`media.stop()` alone doesn't do it), leaking the recording
+indicator/device lock. `backend/db.py`'s `_connect()` is now a `@contextmanager` that actually
+`.close()`s the sqlite3 connection (the old `with sqlite3.connect(...) as conn` idiom only
+commits/rolls back — it never closes). `cli/run_poc.py` now calls `pipeline.run()` instead of
+hand-duplicating extract→confirm→narrate (which meant the CLI never exercised
+`estruturar_relato()`, unlike the server). Dead code removed: `pipeline.run()` was actually dead
+until the run_poc fix revived it; `schema.validate()` and `transcribe.transcribe_audio()` had no
+callers and were deleted outright (not deprecated/kept for "compat").
+
+**Performance:** `db.buscar_produtor()`'s `historico` used to embed each lot's full
+`evidencias_json` — including every base64 photo — even though the producer-profile screen only
+ever reads produto/cooperativa/date/evidence-count from it (see `histToResumo`, now deleted
+client-side since the server does the stripping). `server/app.py::_lote_resumo()` is the single
+lightweight-lot-shape used by `/api/lotes`, `/api/mapa_pontos`, and now
+`/api/produtores/<id>`'s `historico` — cut one real profile response from ~48 KB to ~11 KB.
+`db.listar_produtores()` also had an N+1 (`SELECT COUNT(*)` per producer in a loop) replaced with
+one `GROUP BY` query. If you add a new listing endpoint that touches lots, reuse `_lote_resumo`
+rather than serializing `db.listar_lotes()`'s raw dicts.
+
+**Dark mode** (`@media (prefers-color-scheme: dark)` in `index.html`'s `<style>`): only
+`--bg/--card/--linha/--texto/--texto-suave/--shadow*` flip between themes. The brand/status
+colors (`--verde-600/700`, `--azul`, `--laranja`, `--vermelho` and their `-bg` tints) are
+**identical in both themes on purpose** — a green that reads well as text on a dark background
+cannot simultaneously read well as a button background under white text (verified: no color
+satisfies both ≥4.5:1 contrast requirements at once), so button/pill colors stay constant and
+only the app's "frame" goes dark. Two extra tokens exist for the cases that DO need to flip:
+`--verde-txt` (bright in dark mode) for green text sitting directly on `--bg`/`--card` — h2
+titles, stat numbers, nav-active state, links — and `--texto-sobre-tint` (dark, constant in both
+themes) for neutral labels sitting on the light `--verde-50`/`--verde-100` pill backgrounds that
+don't flip (e.g. `.tile .tnome`, `.prod-info .pnome/.pmeta`). **A subtlety that cost real debug
+time:** class-selector dark-mode overrides (e.g. `.topbar{background:...}`) must be declared
+*after* the base rule they override in source order — `@media` blocks don't win the cascade by
+virtue of being conditional, only by position/specificity, so the dark `.topbar`/`.bottom-nav`/
+`.sk` overrides live in a second `@media (prefers-color-scheme: dark)` block at the very end of
+the stylesheet, while the `:root` custom-property overrides (which don't have this problem —
+`:root` is resolved once) stay in the first block near the top. Also watch for `background:#fff`
+paired with `color:var(--texto)` — that pattern goes near-invisible in dark mode (`--texto` turns
+light-on-white); fixed instances use `var(--card)` instead (identical in light mode, correct in
+dark). Same-hexcode traps found live in `select/input/textarea` and `.relato-box textarea`.
+
+**`frontend/demo.js`** (`window.DemoMode.iniciar()`, wired to `#btnDemo` in the Config screen) —
+a guided walkthrough for live presentations, NOT a scripted/mocked replay: it never simulates
+clicks or fabricates data. It shows a fixed bottom banner naming the current step and visually
+highlights the real button to tap (`.demo-destaque`, pulsing outline), then polls real app state
+every 450ms (`evidencias`, `pipeTimes`, ficha input count, narrative text, `#publicadoCard`
+visibility — all read as bare globals since `app.js` has no IIFE wrapper) to auto-advance the
+instant the presenter genuinely completes that step. Steps 7–8 (QR shown / "ask someone to scan
+it") have no completion signal to poll, so they use a manual "Próximo" button instead.
+**`.demo-banner` has `pointer-events:none`** (only its own `.demo-fechar`/`.demo-proximo` buttons
+re-enable it) — found via testing that the highlighted target can end up positioned behind the
+banner itself, and a non-transparent banner would silently eat the real tap meant for the button
+underneath it.
+
+**Airplane-mode testing note:** Chrome/Playwright's `context.setOffline(true)` blocks *all*
+outgoing requests, including same-origin `localhost` POSTs — it does not distinguish "no
+internet" from "no loopback", so it cannot be used to verify the local Ollama/whisper.cpp pipeline
+(which talks to `localhost:8000`, not the internet) still works offline. `navigator.onLine` does
+still correctly flip to `false` under it, which is enough to test the sync-gating logic. To
+verify the AI pipeline itself needs zero internet, block everything *except*
+`localhost`/`127.0.0.1` via `page.route()` instead — confirmed this way: full record→whisper→
+Gemma-extract→Gemma-narrate flow completes with zero requests to any external host.
 
 ### Language
 

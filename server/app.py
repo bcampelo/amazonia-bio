@@ -20,6 +20,7 @@ import sys
 import tempfile
 import unicodedata
 import uuid
+from typing import Optional
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
@@ -27,9 +28,11 @@ sys.path.insert(0, ROOT_DIR)
 import qrcode  # noqa: E402
 from flask import Flask, abort, jsonify, request, render_template_string, send_from_directory  # noqa: E402
 
+import time  # noqa: E402
+
 from backend import db  # noqa: E402
 from backend.pipeline import extract, estruturar_relato, narrate  # noqa: E402
-from backend.asr.transcribe import transcribe_audio  # noqa: E402
+from backend.asr.transcribe import transcribe  # noqa: E402
 
 FRONTEND_DIR = os.path.join(ROOT_DIR, "frontend")
 db.init_db()
@@ -46,6 +49,27 @@ def index():
 def health():
     from backend.gemma.gemma_generate import DEFAULT_BACKEND
     return jsonify({"status": "ok", "backend": DEFAULT_BACKEND})
+
+
+@app.get("/api/asr_info")
+def asr_info():
+    """Status REAL do ASR: whisper.cpp local disponível? (para o badge da UI)."""
+    from backend.asr.transcribe import whisper_disponivel
+    local = whisper_disponivel()
+    return jsonify({"local": local,
+                    "engine": "whisper.cpp" if local else "gemini (nuvem)"})
+
+
+@app.get("/api/modelo_local")
+def modelo_local():
+    """Informa se há um modelo Gemma on-device instalado em frontend/models/.
+    O front usa isto para decidir usar WebGPU (local) — evita 'sondar' o arquivo
+    grande no navegador (que polui o console com 404 quando ausente)."""
+    models_dir = os.path.join(FRONTEND_DIR, "models")
+    exts = (".litertlm", ".task", ".bin")
+    arquivos = ([f for f in os.listdir(models_dir) if f.endswith(exts)]
+                if os.path.isdir(models_dir) else [])
+    return jsonify({"disponivel": bool(arquivos), "arquivos": arquivos})
 
 
 def _save_temp(raw: bytes, suffix: str) -> str:
@@ -67,12 +91,12 @@ def api_transcrever():
         return jsonify({"erro": "audio_base64 ausente"}), 400
     audio_path = _save_temp(base64.b64decode(audio_b64), ".wav")
     try:
-        transcript = transcribe_audio(audio_path)
+        resultado = transcribe(audio_path)  # {transcript, engine, ms} — local-first (whisper.cpp)
     except Exception as e:  # noqa: BLE001 — erro de ASR não pode derrubar o fluxo
         return jsonify({"erro": f"falha na transcrição: {e}"}), 502
     finally:
         os.remove(audio_path)
-    return jsonify({"transcript": transcript})
+    return jsonify(resultado)
 
 
 @app.post("/api/extrair")
@@ -83,13 +107,14 @@ def api_extrair():
     transcript = data.get("transcript", "")
     image_b64 = data.get("image_base64")
     image_path = _save_temp(base64.b64decode(image_b64), ".jpg") if image_b64 else None
+    t0 = time.time()
     try:
         relato = estruturar_relato(transcript)
         ficha = extract(relato or transcript, image=image_path)
     finally:
         if image_path:
             os.remove(image_path)
-    return jsonify({"ficha": ficha, "relato": relato})
+    return jsonify({"ficha": ficha, "relato": relato, "ms": int((time.time() - t0) * 1000)})
 
 
 @app.post("/api/narrar")
@@ -97,8 +122,9 @@ def api_narrar():
     data = request.get_json(force=True) or {}
     ficha_confirmada = data.get("ficha_confirmada") or {}
     cooperativa = data.get("cooperativa") or "Cooperativa Exemplo (Resex Chico Mendes)"
+    t0 = time.time()
     narrativa = narrate(ficha_confirmada, cooperativa)
-    return jsonify({"narrativa": narrativa})
+    return jsonify({"narrativa": narrativa, "ms": int((time.time() - t0) * 1000)})
 
 
 # --------------------------------------------------------------------------- #
@@ -128,49 +154,84 @@ def api_buscar_produtor(produtor_id):
     prod = db.buscar_produtor(produtor_id)
     if not prod:
         abort(404)
+    # PERFORMANCE: db.buscar_produtor() traz o histórico com o dict COMPLETO de
+    # cada lote (evidencias_json inclui as fotos em base64 — pode passar de 1 MB
+    # por lote). A tela de perfil só usa produto/cooperativa/data/contagem de
+    # evidências (ver histToResumo em screens.js) — nunca as imagens. Substitui
+    # pelo resumo leve antes de serializar, senão o perfil de um produtor com
+    # poucos lotes já respondia ~50 KB por causa de fotos que a UI descarta.
+    prod["historico"] = [_lote_resumo(lo) for lo in prod.get("historico", [])]
     return jsonify(prod)
 
 
 # --------------------------------------------------------------------------- #
 # Lotes (listagem para dashboard/histórico/rastreabilidade) + denúncias.
 # --------------------------------------------------------------------------- #
+_ESSENCIAIS_LOTE = ("produtor", "coleta", "produto", "gemma", "confirmacao", "narrativa")
+
+
+def _lote_resumo(lo: dict, nomes: Optional[dict] = None) -> dict:
+    """Versão LEVE de um lote para listagens (sem as fotos em base64 da
+    evidencias_json, que podem passar de 1 MB por lote). Toda tela de lista
+    (painel, histórico, rastrear, perfil do produtor) usa só isto — nunca o
+    dict bruto do banco — para não trafegar imagens que a UI nem exibe ali."""
+    ev = lo.get("evidencias") or {}
+    return {
+        "slug": lo["slug"], "produto": lo["produto"], "cooperativa": lo["cooperativa"],
+        "produtor_id": lo.get("produtor_id"),
+        "produtor_nome": (nomes or {}).get(lo.get("produtor_id")),
+        "criado_em": lo["criado_em"], "status": lo["status"],
+        "evidencias_completas": sum(1 for k in _ESSENCIAIS_LOTE if k in ev),
+        "url": f"/p/{lo['slug']}",
+    }
+
+
 @app.get("/api/lotes")
 def api_listar_lotes():
     cooperativa = request.args.get("cooperativa")
     lotes = db.listar_lotes(cooperativa=cooperativa)
     # enriquece com o nome do produtor (uma consulta só, mapa em memória)
     nomes = {p["id"]: p["nome"] for p in db.listar_produtores()}
-    resumo = []
-    for lo in lotes:
-        ev = lo.get("evidencias") or {}
-        essenciais = ("produtor", "coleta", "produto", "gemma", "confirmacao", "narrativa")
-        resumo.append({
-            "slug": lo["slug"], "produto": lo["produto"], "cooperativa": lo["cooperativa"],
-            "produtor_id": lo.get("produtor_id"),
-            "produtor_nome": nomes.get(lo.get("produtor_id")),
-            "criado_em": lo["criado_em"], "status": lo["status"],
-            "evidencias_completas": sum(1 for k in essenciais if k in ev),
-            "url": f"/p/{lo['slug']}",
-        })
-    return jsonify(resumo)
+    return jsonify([_lote_resumo(lo, nomes) for lo in lotes])
 
 
 @app.get("/api/resumo")
 def api_resumo():
-    """Números do painel (dashboard)."""
+    """Números do painel (dashboard) — tudo calculado a partir de dados reais."""
     lotes = db.listar_lotes()
     produtores = db.listar_produtores()
-    essenciais = ("produtor", "coleta", "produto", "gemma", "confirmacao", "narrativa")
     completos = sum(1 for lo in lotes
-                    if all(k in (lo.get("evidencias") or {}) for k in essenciais))
+                    if all(k in (lo.get("evidencias") or {}) for k in _ESSENCIAIS_LOTE))
     coops = sorted({lo["cooperativa"] for lo in lotes if lo["cooperativa"]})
+    produtos = sorted({lo["produto"] for lo in lotes if lo["produto"]})
+    comunidades = sorted({p["comunidade"] for p in produtores if p.get("comunidade")})
     return jsonify({
         "total_lotes": len(lotes),
         "total_produtores": len(produtores),
         "lotes_rastreaveis_completos": completos,
         "cooperativas": coops,
+        "produtos_distintos": produtos,
+        "comunidades_atendidas": comunidades,
         "denuncias_abertas": sum(1 for d in db.listar_denuncias() if d["status"] == "aberta"),
     })
+
+
+@app.get("/api/mapa_pontos")
+def api_mapa_pontos():
+    """Pontos reais de GPS (foto do produto/coleta/produtor) para o mapa simples
+    do painel. Sem serviço de mapa externo (offline-first) — só as coordenadas.
+    Uma única consulta ao banco (listar_lotes já traz as evidencias completas —
+    reconsultar buscar_lote por lote aqui seria N+1 queries à toa)."""
+    pontos = []
+    for lo in db.listar_lotes():
+        ev = lo.get("evidencias") or {}
+        for chave in ("produto", "coleta", "produtor"):
+            gps = (ev.get(chave) or {}).get("gps") or {}
+            if gps.get("ok"):
+                pontos.append({"lat": gps["lat"], "lng": gps["lng"],
+                               "produto": lo["produto"], "slug": lo["slug"]})
+                break  # 1 ponto por lote basta pro mapa
+    return jsonify(pontos)
 
 
 @app.get("/api/denuncias")
@@ -229,51 +290,105 @@ _PUBLIC_PAGE = """<!doctype html>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>{{ produto }} — {{ cooperativa }}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='24' fill='%2315683a'/%3E%3Ctext y='72' x='50' font-size='58' text-anchor='middle'%3E%F0%9F%8C%BF%3C/text%3E%3C/svg%3E"/>
 <style>
-  :root{--verde:#1b5e20;--verde2:#2e7d32;--bg:#f6f8f4}
-  *{box-sizing:border-box;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-  body{margin:0;background:var(--bg);color:#1a2016}
-  header{background:var(--verde);color:#fff;padding:20px 16px}
-  header h1{margin:0;font-size:22px}
-  main{padding:16px;max-width:640px;margin:0 auto}
-  .card{background:#fff;border:1px solid #e0e6dd;border-radius:14px;padding:18px;margin-bottom:14px}
-  h2{font-size:13px;margin:0 0 10px;color:var(--verde2);text-transform:uppercase;letter-spacing:.04em}
-  .campo{border-bottom:1px solid #e0e6dd;padding:8px 0;font-size:14px}
-  .campo b{display:block;font-size:11px;color:#6b7663;text-transform:capitalize}
-  .narrativa{font-size:16px;line-height:1.6}
-  .selo{font-size:13px;color:#456;margin-top:12px}
+  :root{--verde-900:#0b3d1f;--verde-700:#15683a;--verde-600:#1f8043;--verde-500:#35a45a;
+    --verde-100:#d9f2e0;--verde-50:#eff8f2;--bg:#f4f7f4;--card:#fff;--linha:#e7ece8;
+    --texto:#0f1a12;--texto-suave:#5f6f64;--azul:#1565c0;--azul-bg:#e7f0fb;
+    --laranja:#965000;--laranja-bg:#fdf0dd;--vermelho:#c62828;
+    --sh:0 1px 2px rgba(11,61,31,.05),0 6px 20px rgba(11,61,31,.07)}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    background:var(--bg);color:var(--texto);-webkit-font-smoothing:antialiased}
+  header{background:linear-gradient(135deg,var(--verde-700),var(--verde-600));color:#fff;
+    padding:26px 18px 30px;text-align:center}
+  header .selo-cert{display:inline-block;font-size:11px;font-weight:800;letter-spacing:.08em;
+    text-transform:uppercase;background:rgba(255,255,255,.18);padding:5px 12px;border-radius:99px;margin-bottom:12px}
+  header h1{margin:2px 0 4px;font-size:26px;letter-spacing:-.02em}
+  header .sub{font-size:13px;opacity:.9}
+  main{padding:0 16px 40px;max-width:640px;margin:-16px auto 0}
+  .card{background:var(--card);border:1px solid var(--linha);border-radius:18px;padding:20px;
+    margin-bottom:14px;box-shadow:var(--sh)}
+  h2{font-size:12px;margin:0 0 14px;color:var(--verde-600);text-transform:uppercase;
+    letter-spacing:.07em;font-weight:800}
+  .campo{border-bottom:1px solid var(--linha);padding:10px 0;font-size:14px}
+  .campo:last-child{border-bottom:0}
+  .campo b{display:block;font-size:11px;color:var(--texto-suave);text-transform:capitalize;font-weight:700;margin-bottom:2px}
+  .narrativa{font-size:16px;line-height:1.65;margin:0}
+  .selo{font-size:12.5px;color:var(--texto-suave);margin-top:12px;line-height:1.5}
   .cadeia{list-style:none;margin:0;padding:0}
-  .cadeia li{display:flex;gap:11px;padding:11px 0;border-bottom:1px solid #e0e6dd}
+  .cadeia li{display:flex;gap:12px;padding:11px 0;border-bottom:1px solid var(--linha);align-items:center}
   .cadeia li:last-child{border-bottom:0}
-  .cadeia .ci{width:26px;height:26px;border-radius:50%;flex:none;display:flex;align-items:center;
-    justify-content:center;font-size:13px;background:#eef3ea;color:#8a9683}
-  .cadeia li.feito .ci{background:#d7ecd9;color:var(--verde)}
+  .cadeia .ci{width:30px;height:30px;border-radius:10px;flex:none;display:flex;align-items:center;
+    justify-content:center;font-size:14px;background:#eef2ee;color:#9aa79f}
+  .cadeia li.feito .ci{background:var(--verde-100);color:var(--verde-700)}
   .cadeia .cinfo{flex:1;min-width:0}
-  .cadeia .ctitulo{font-size:14px;font-weight:600}
-  .cadeia li.pendente .ctitulo{color:#9aa694;font-weight:500}
-  .cadeia .cmeta{font-size:12px;color:#6b7663;margin-top:2px;word-break:break-word}
-  .cadeia .cmeta .g{color:#1565c0}
-  .cadeia .cmeta .ng{color:#c62828}
-  .cadeia .cthumb{width:52px;height:52px;object-fit:cover;border-radius:8px;flex:none;border:1px solid #e0e6dd}
-  .selo-rastro{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.03em;
-    background:#d7ecd9;color:var(--verde);padding:4px 9px;border-radius:99px;margin-bottom:10px}
+  .cadeia .ctitulo{font-size:14px;font-weight:700}
+  .cadeia li.pendente .ctitulo{color:#9aa79f;font-weight:600}
+  .cadeia .cmeta{font-size:11.5px;color:var(--texto-suave);margin-top:2px;word-break:break-word}
+  .cadeia .cmeta .g{color:var(--azul)}
+  .cadeia .cmeta .ng{color:var(--vermelho)}
+  .cadeia .cthumb{width:52px;height:52px;object-fit:cover;border-radius:10px;flex:none;border:1px solid var(--linha)}
+  .kicker{display:inline-block;font-size:11px;font-weight:800;letter-spacing:.04em;
+    background:var(--verde-100);color:var(--verde-700);padding:4px 10px;border-radius:99px;margin-bottom:10px}
+  .idlote{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:var(--texto-suave);
+    background:var(--verde-50);border:1px solid var(--verde-100);border-radius:10px;padding:8px 12px;
+    display:inline-block;margin-top:6px}
+  .selos-grid{display:flex;flex-wrap:wrap;gap:8px}
+  .selo-badge{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;
+    background:var(--verde-50);border:1px solid var(--verde-100);color:var(--verde-700);
+    border-radius:12px;padding:8px 12px}
+  .selo-badge.frac{background:var(--laranja-bg);border-color:#f6dfae;color:var(--laranja)}
+  .qr-box{text-align:center}
+  .qr-box img{width:168px;height:168px;border-radius:14px;border:1px solid var(--linha);padding:10px;background:#fff}
+  .ia-info{font-size:13px;color:var(--texto);line-height:1.7;margin:0}
+  .ia-info b{color:var(--verde-700)}
+  .footer-cert{text-align:center;font-size:11.5px;color:var(--texto-suave);padding:6px 12px 28px;line-height:1.6}
 </style>
 </head>
 <body>
-<header><h1>🌳 {{ produto }}</h1><div>Origem rastreada — BioAmazon IA</div></header>
+<header>
+  <span class="selo-cert">🌿 Certificado Digital de Rastreabilidade</span>
+  <h1>{{ produto }}</h1>
+  <div class="sub">Atestado por {{ cooperativa }} · BioAmazon IA</div>
+</header>
 <main>
+  <div class="card" style="text-align:center">
+    <span class="kicker">Nº DE RASTREIO</span><br/>
+    <span class="idlote">{{ slug }}</span>
+    <p class="selo" style="margin-bottom:0">Emitido em {{ data_emissao }}</p>
+  </div>
+
+  {% if selos %}
+  <div class="card">
+    <h2>Selos verificados</h2>
+    <div class="selos-grid">
+      {% for s in selos %}
+      <span class="selo-badge {{ '' if s.ok else 'frac' }}">{{ s.icon }} {{ s.label }}</span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   <div class="card">
     <h2>Jornada</h2>
     <p class="narrativa">{{ narrativa }}</p>
-    <p class="selo">Atestado por {{ cooperativa }}</p>
+    <p class="selo">Narrativa gerada pelo Gemma a partir apenas dos fatos confirmados pelo operador.</p>
   </div>
+
+  <div class="card qr-box">
+    <h2 style="text-align:left">Compartilhar este certificado</h2>
+    <img src="data:image/png;base64,{{ qr_base64 }}" alt="QR code deste lote"/>
+    <p class="selo">Escaneie para abrir esta mesma página em outro dispositivo.</p>
+  </div>
+
   {% if produtor %}
   <div class="card">
     <h2>Produtor</h2>
-    <div style="display:flex;gap:12px;align-items:center">
-      {% if produtor.foto %}<img src="{{ produtor.foto }}" style="width:56px;height:56px;border-radius:50%;object-fit:cover;border:1px solid #e0e6dd"/>{% endif %}
+    <div style="display:flex;gap:14px;align-items:center">
+      {% if produtor.foto %}<img src="{{ produtor.foto }}" style="width:58px;height:58px;border-radius:50%;object-fit:cover;border:1px solid var(--linha)"/>{% endif %}
       <div>
-        <div style="font-weight:600">{{ produtor.nome }}</div>
+        <div style="font-weight:800;font-size:15px">{{ produtor.nome }}</div>
         <div class="selo" style="margin:2px 0 0">
           {{ produtor.comunidade }}{% if produtor.comunidade and produtor.cooperativa %} · {% endif %}{{ produtor.cooperativa }}</div>
         <div class="selo" style="margin:2px 0 0">{{ produtor.indicadores.total_lotes }} lote(s) rastreado(s) · cód. {{ produtor.codigo }}</div>
@@ -281,23 +396,34 @@ _PUBLIC_PAGE = """<!doctype html>
     </div>
   </div>
   {% endif %}
+
   {% if relato %}
   <div class="card">
     <h2>Descrição da coleta</h2>
     <p class="narrativa" style="font-size:15px">{{ relato }}</p>
-    <p class="selo">Relato do produtor, organizado pelo Gemma — sem fatos inventados.</p>
+    <p class="selo">Relato do produtor, organizado pelo Gemma — sem fatos inventados, apenas reorganizado.</p>
   </div>
   {% endif %}
+
   <div class="card">
-    <h2>Ficha do lote</h2>
+    <h2>Ficha técnica</h2>
     {% for k, v in ficha.items() %}
     <div class="campo"><b>{{ k.replace("_", " ") }}</b>{{ v.value }}</div>
     {% endfor %}
+    <p class="selo">Todos os campos foram revisados e confirmados por um operador humano
+      antes da publicação (loop de confiança).</p>
   </div>
+
+  {% if ia_info %}
+  <div class="card">
+    <h2>Como este certificado foi gerado</h2>
+    <p class="ia-info">{{ ia_info | safe }}</p>
+  </div>
+  {% endif %}
+
   {% if cadeia %}
   <div class="card">
-    <span class="selo-rastro">🔗 CADEIA DE EVIDÊNCIAS</span>
-    <h2>Rastreabilidade verificável</h2>
+    <h2>Cadeia de evidências</h2>
     <ul class="cadeia">
       {% for item in cadeia %}
       <li class="{{ 'feito' if item.feito else 'pendente' }}">
@@ -312,12 +438,17 @@ _PUBLIC_PAGE = """<!doctype html>
       a coordenada exata fica registrada com a cooperativa para auditoria.</p>
   </div>
   {% endif %}
+
+  <p class="footer-cert">Este certificado é gerado automaticamente pelo BioAmazon IA a partir de
+    dados capturados em campo e confirmados por um operador humano. 🌳</p>
 </main>
 </body>
 </html>"""
 
 
-# Definição da cadeia de evidências (mesma ordem/rótulos do app).
+# Definição da cadeia de evidências. Espelha CADEIA em frontend/app.js (mesma
+# ordem/chaves/rótulos, mesmo padrão de duplicação intencional que FICHA_FIELDS —
+# ver CLAUDE.md). Se adicionar/remover um elo aqui, replique lá também.
 _CADEIA_DEF = [
     ("produtor", "👤", "Foto do produtor"),
     ("coleta", "🌴", "Foto da coleta"),
@@ -370,6 +501,43 @@ def _prep_cadeia(evidencias: dict) -> list:
     return itens
 
 
+_ESSENCIAIS = ("produtor", "coleta", "produto", "gemma", "confirmacao", "narrativa")
+
+
+def _monta_ia_info(ev: dict) -> str:
+    """Texto factual sobre COMO este lote específico foi processado — só afirma
+    'local'/'nuvem' quando o dado foi realmente registrado na captura (evidencias
+    .gemma/.narrativa.local); para lotes antigos sem esse dado, fica genérico em
+    vez de inventar. Nunca afirmamos Gemini quando o backend ativo é local."""
+    partes = []
+    g, n = ev.get("gemma") or {}, ev.get("narrativa") or {}
+    if "local" in g:
+        partes.append("A ficha técnica foi extraída pelo <b>Gemma rodando localmente no "
+                       "dispositivo</b> (Edge AI)" if g["local"] else
+                       "A ficha técnica foi extraída pelo Gemma via nuvem (fallback remoto)")
+    else:
+        partes.append("A ficha técnica foi extraída pelo Gemma")
+    if "local" in n:
+        partes.append("a narrativa foi gerada <b>localmente, sem envio de dados à internet</b>"
+                       if n["local"] else "a narrativa foi gerada via nuvem (fallback remoto)")
+    else:
+        partes.append("a narrativa foi gerada pelo Gemma")
+    return "; ".join(partes) + ". A transcrição da fala, quando por áudio, roda com whisper.cpp offline."
+
+
+def _monta_selos(registro: dict, produtor: Optional[dict]) -> list:
+    ev = registro.get("evidencias") or {}
+    completa = all(k in ev for k in _ESSENCIAIS)
+    gps_ok = any((ev.get(k) or {}).get("gps", {}).get("ok") for k in ("produtor", "coleta", "produto"))
+    ia_local = bool((ev.get("gemma") or {}).get("local")) or bool((ev.get("narrativa") or {}).get("local"))
+    return [
+        {"icon": "🔗", "label": "Rastreabilidade completa", "ok": completa},
+        {"icon": "📍", "label": "Localização por GPS", "ok": gps_ok},
+        {"icon": "👤", "label": "Produtor identificado", "ok": bool(produtor)},
+        {"icon": "📴", "label": "Processado por IA local", "ok": ia_local},
+    ]
+
+
 @app.get("/p/<slug>")
 def pagina_publica(slug):
     registro = db.buscar_lote(slug)
@@ -378,10 +546,14 @@ def pagina_publica(slug):
     produto = (registro["ficha_confirmada"].get("produto") or {}).get("value", "Produto")
     cadeia = _prep_cadeia(registro.get("evidencias") or {})
     produtor = db.buscar_produtor(registro["produtor_id"]) if registro.get("produtor_id") else None
+    url = request.host_url.rstrip("/") + "/p/" + slug
     return render_template_string(
         _PUBLIC_PAGE, produto=produto, narrativa=registro["narrativa"],
         cooperativa=registro["cooperativa"], ficha=registro["ficha_confirmada"],
         cadeia=cadeia, relato=registro.get("relato") or "", produtor=produtor,
+        slug=slug, data_emissao=_fmt_hora(registro.get("criado_em", "")) or registro.get("criado_em", ""),
+        qr_base64=_qr_base64(url), selos=_monta_selos(registro, produtor),
+        ia_info=_monta_ia_info(registro.get("evidencias") or {}),
     )
 
 
